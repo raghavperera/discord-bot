@@ -3,11 +3,11 @@ import {
   GatewayIntentBits,
   Partials,
   PermissionsBitField,
-  Routes,
   REST,
-  SlashCommandBuilder
+  Routes,
+  SlashCommandBuilder,
+  Events
 } from 'discord.js';
-import { joinVoiceChannel } from '@discordjs/voice';
 import express from 'express';
 import 'dotenv/config';
 
@@ -17,179 +17,121 @@ const client = new Client({
     GatewayIntentBits.GuildMessages,
     GatewayIntentBits.GuildMembers,
     GatewayIntentBits.MessageContent,
-    GatewayIntentBits.DirectMessages,
     GatewayIntentBits.GuildMessageReactions,
-    GatewayIntentBits.GuildVoiceStates
+    GatewayIntentBits.DirectMessages
   ],
   partials: [Partials.Channel, Partials.Message, Partials.Reaction]
 });
 
+// Keep-alive
 const app = express();
 app.get('/', (_, res) => res.send('Bot is alive!'));
-app.listen(5000, () => console.log('🌐 Keep-alive server running on port 5000'));
+app.listen(3000, () => console.log('Server running'));
 
+// Utils
 const wait = ms => new Promise(res => setTimeout(res, ms));
-const dmedUsers = new Set();
+const token = process.env.DISCORD_TOKEN;
+const clientId = process.env.CLIENT_ID;
+const guildId = process.env.GUILD_ID;
 
-const AUTO_RECONNECT_CHANNEL_ID = '1368359914145058956';
-let connection = null;
-let shouldAutoReconnect = false;
-
-client.once('ready', () => {
-  console.log(`✅ Logged in as ${client.user.tag}`);
-});
-
-// Voice auto-reconnect
-client.on('voiceStateUpdate', async (oldState, newState) => {
-  if (
-    oldState.member?.id === client.user.id &&
-    oldState.channelId === AUTO_RECONNECT_CHANNEL_ID &&
-    !newState.channelId &&
-    shouldAutoReconnect
-  ) {
-    console.log('🔄 Attempting voice reconnect...');
-    await wait(10000);
-    try {
-      const channel = client.channels.cache.get(AUTO_RECONNECT_CHANNEL_ID);
-      if (channel) {
-        connection = joinVoiceChannel({
-          channelId: AUTO_RECONNECT_CHANNEL_ID,
-          guildId: channel.guild.id,
-          adapterCreator: channel.guild.voiceAdapterCreator,
-          selfDeaf: false,
-          selfMute: false
-        });
-        console.log('✅ Voice channel rejoined.');
-      }
-    } catch (err) {
-      console.error('❌ VC reconnect failed:', err);
-    }
-  }
-});
+client.once('ready', () => console.log(`Logged in as ${client.user.tag}`));
 
 // Slash command registration
-client.on('ready', async () => {
+async function registerSlash() {
   const commands = [
     new SlashCommandBuilder()
       .setName('hostfriendly')
-      .setDescription('Host a 7v7 friendly (positions, react-based)')
-  ].map(cmd => cmd.toJSON());
-
-  const rest = new REST({ version: '10' }).setToken(process.env.DISCORD_TOKEN);
+      .setDescription('Host an Agnello FC friendly')
+      .toJSON()
+  ];
+  const rest = new REST({ version: '10' }).setToken(token);
   try {
-    await rest.put(
-      Routes.applicationCommands(client.user.id),
-      { body: commands }
-    );
-    console.log('✅ Slash commands registered.');
-  } catch (error) {
-    console.error('❌ Slash command error:', error);
+    await rest.put(Routes.applicationGuildCommands(clientId, guildId), { body: commands });
+    console.log('✅ Slash commands registered');
+  } catch (err) {
+    console.error('❌ Slash reg failed:', err);
+  }
+}
+client.login(token).then(registerSlash);
+
+// Handle text and slash calls
+client.on('messageCreate', msg => {
+  if (msg.content === '!hostfriendly') runHostFriendly(msg.channel, msg.member);
+});
+client.on(Events.InteractionCreate, async inter => {
+  if (!inter.isChatInputCommand()) return;
+  if (inter.commandName === 'hostfriendly') {
+    await inter.reply({ content: 'Hosting friendly…', ephemeral: true });
+    runHostFriendly(inter.channel, inter.member);
   }
 });
 
-async function startFriendly(channel, author) {
-  const announcement = 
-    `> #FRIENDLY\n` +
-    `> **Match Type:** 7v7\n` +
-    `> **Server Region:** NA or any\n` +
-    `> **Ping:** @here\n` +
-    `> **Trialist Allowed:** ✅\n` +
-    `> **Participating in friendly further betters your skills.**\n` +
-    `> React with ✅ to accept.\n@here`;
+async function runHostFriendly(channel, member) {
+  if (!member.permissions.has(PermissionsBitField.Flags.Administrator)) {
+    return channel.send('❌ Only admins can host friendlies.');
+  }
 
-  const announcementMsg = await channel.send({
-    content: announcement,
-    allowedMentions: { parse: ['here'] }
-  });
+  const announcement = `> # PARMA F.C FRIENDLY\n> React 1️⃣➖7️⃣ to join positions\n@here`;
+  const ann = await channel.send({ content: announcement, allowedMentions: { parse: ['here'] } });
 
-  await announcementMsg.react('✅');
+  const emojis = ['1️⃣','2️⃣','3️⃣','4️⃣','5️⃣','6️⃣','7️⃣'];
+  const positions = ['GK','CB','CB2','CM','LW','RW','ST'];
+  const claimedUsers = new Map();
 
-  let enough = false;
-  let collectedUsers = new Set();
+  for (const e of emojis) await ann.react(e);
 
-  const collector = announcementMsg.createReactionCollector({
-    filter: (reaction, user) => reaction.emoji.name === '✅' && !user.bot,
-    time: 10 * 60 * 1000
-  });
-
-  collector.on('collect', (_, user) => {
-    collectedUsers.add(user.id);
-    if (collectedUsers.size >= 7 && !enough) {
-      enough = true;
-      collector.stop();
+  let done = false;
+  const collector = ann.createReactionCollector({ time: 10*60_000 });
+  collector.on('collect', async (reaction, user) => {
+    if (user.bot || done) return;
+    const idx = emojis.indexOf(reaction.emoji.name);
+    if (idx === -1) return;
+    if (!claimedUsers.has(emojis[idx])) {
+      claimedUsers.set(emojis[idx], user.id);
+      // If all seven filled, stop collecting
+      if (claimedUsers.size >= 7) {
+        done = true;
+        collector.stop();
+      }
     }
   });
 
-  // Wait 1 minute before checking
-  await wait(60000);
+  // After 1 minute ping
+  setTimeout(async () => {
+    if (!done && claimedUsers.size < 7) {
+      await channel.send('@here not enough reacts yet!');
+    }
+  }, 60_000);
 
-  if (collectedUsers.size < 7) {
-    await channel.send('@here — Need more reacts to start the friendly!');
-  }
+  collector.on('end', async () => {
+    if (!done && claimedUsers.size < 7) {
+      return channel.send('❌ Not enough players reacted. Friendly cancelled.');
+    }
 
-  await wait(9 * 60000); // 9 more minutes
+    // Show assignment
+    await channel.send('✅ Positions assigned:');
+    const assigned = [];
+    for (let i=0; i<emojis.length; i++) {
+      const userId = claimedUsers.get(emojis[i]);
+      const mention = userId ? `<@${userId}>` : 'OPEN';
+      assigned.push(`${positions[i]} — ${mention}`);
+    }
+    await channel.send(assigned.join('\n'));
 
-  if (collectedUsers.size < 7) {
-    await channel.send('❌ Not enough players reacted. Friendly is cancelled.');
-    return;
-  }
-
-  await channel.send('✅ Enough players! Starting position selection...');
-
-  const roles = ['GK', 'CB1', 'CB2', 'CM', 'LW', 'RW', 'ST'];
-  const claimedUsers = new Set();
-
-  for (const roleName of roles) {
-    const roleMsg = await channel.send(roleName);
-    await roleMsg.react('✅');
-
-    const rCollector = roleMsg.createReactionCollector({
-      filter: (reaction, user) =>
-        reaction.emoji.name === '✅' &&
-        collectedUsers.has(user.id) &&
-        !claimedUsers.has(user.id),
-      max: 1,
-      time: 60000
-    });
-
-    rCollector.on('collect', async (reaction, user) => {
-      claimedUsers.add(user.id);
-      await roleMsg.edit(`${roleName} - <@${user.id}>`);
-    });
-
-    rCollector.on('end', collected => {
-      if (collected.size === 0) {
-        roleMsg.edit(`${roleName} - OPEN 😃`);
+    // Wait for link
+    const linkListener = async msg => {
+      if (msg.channel.id === channel.id && msg.content.includes('https://')) {
+        client.off('messageCreate', linkListener);
+        for (const [emoji, userId] of claimedUsers) {
+          try {
+            const u = await client.users.fetch(userId);
+            await u.send(`Here’s the friendly, join up: ${msg.content}`);
+          } catch { console.error('DM failed for', userId); }
+        }
       }
-    });
-  }
+    };
+    client.on('messageCreate', linkListener);
+  });
 }
-
-// Handle message prefix commands
-client.on('messageCreate', async msg => {
-  if (!msg.guild || msg.author.bot) return;
-
-  if (msg.mentions.everyone) {
-    try {
-      await msg.react('✅');
-    } catch {}
-  }
-
-  if (msg.content === '!hostfriendly') {
-    startFriendly(msg.channel, msg.author);
-  }
-});
-
-// Handle slash commands
-client.on('interactionCreate', async interaction => {
-  if (!interaction.isChatInputCommand()) return;
-  if (interaction.commandName === 'hostfriendly') {
-    await interaction.reply({ content: 'Hosting friendly...', ephemeral: true });
-    startFriendly(interaction.channel, interaction.user);
-  }
-});
-
-process.on('unhandledRejection', err => console.error('Unhandled:', err));
-process.on('uncaughtException', err => console.error('Uncaught:', err));
-
-client.login(process.env.DISCORD_TOKEN);
+process.on('unhandledRejection', console.error);
+process.on('uncaughtException', console.error);
