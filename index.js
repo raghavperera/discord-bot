@@ -23,22 +23,22 @@ const client = new Client({
   partials: [Partials.Message, Partials.Channel, Partials.Reaction]
 });
 
-// keep-alive server
+// Keep-alive server
 const app = express();
 app.get('/', (_, res) => res.send('Bot is alive!'));
-app.listen(3000, () => console.log('Express server started'));
+app.listen(3000, () => console.log('Server running on port 3000'));
 
-// utilities
-const wait = ms => new Promise(r => setTimeout(r, ms));
-const token     = process.env.DISCORD_TOKEN;
-const clientId  = process.env.CLIENT_ID;
-const guildId   = process.env.GUILD_ID;
+// Utilities
+const wait     = ms => new Promise(r => setTimeout(r, ms));
+const token    = process.env.DISCORD_TOKEN;
+const clientId = process.env.CLIENT_ID;
+const guildId  = process.env.GUILD_ID;
 
-// reaction slots
+// Reaction slots mapping
 const emojis    = ['1️⃣','2️⃣','3️⃣','4️⃣','5️⃣','6️⃣','7️⃣'];
 const positions = ['GK','CB','CB2','CM','LW','RW','ST'];
 
-// track active hostlies per channel
+// Prevent double-runs per channel
 const active = new Set();
 
 client.once('ready', () => {
@@ -46,31 +46,30 @@ client.once('ready', () => {
   registerSlash();
 });
 
-// register slash command
+// Register slash command
 async function registerSlash() {
-  const cmd = new SlashCommandBuilder()
+  const slash = new SlashCommandBuilder()
     .setName('hostfriendly')
     .setDescription('Host a Parma FC 7v7 friendly');
   const rest = new REST({ version: '10' }).setToken(token);
   await rest.put(
     Routes.applicationGuildCommands(clientId, guildId),
-    { body: [cmd.toJSON()] }
+    { body: [slash.toJSON()] }
   );
-  console.log('✅ Slash command registered');
+  console.log('✅ /hostfriendly registered');
 }
 
-// unified starter
+// Core friendly logic
 async function runHostFriendly(channel, hostMember) {
+  // Only admins
   if (!hostMember.permissions.has(PermissionsBitField.Flags.Administrator)) {
     await channel.send('❌ Only admins can host friendlies.');
     return;
   }
-  if (active.has(channel.id)) {
-    // no double-run protection removed per request
-  }
+  // Mark this channel as active
   active.add(channel.id);
 
-  // announce
+  // Announcement
   const ann = await channel.send({
     content:
       `> **PARMA FC 7v7 FRIENDLY**\n` +
@@ -83,48 +82,60 @@ async function runHostFriendly(channel, hostMember) {
       `> React 7️⃣ → ST\n` +
       `@here`
   });
+  // Add reactions
   for (const e of emojis) await ann.react(e);
 
   let done = false;
-  const claimed = new Map(); // emoji → userId
+  const claimedMap   = new Map();   // emoji → userId
+  const claimedUsers = new Set();   // userId → true
 
-  // collector for up to 10 min
+  // Collector for up to 10 minutes
   const collector = ann.createReactionCollector({ time: 10 * 60_000 });
   collector.on('collect', (reaction, user) => {
     if (user.bot || done) return;
     const idx = emojis.indexOf(reaction.emoji.name);
-    if (idx !== -1 && !claimed.has(emojis[idx])) {
-      claimed.set(emojis[idx], user.id);
-      channel.send(`${positions[idx]} claimed by <@${user.id}>`);
-      if (claimed.size >= 7) {
-        done = true;
-        collector.stop('full');
-      }
+    if (idx === -1) return;                // not one of our emojis
+    if (claimedMap.has(emojis[idx])) return;      // slot already taken
+    if (claimedUsers.has(user.id))   return;      // user already claimed one
+
+    // Claim it
+    claimedMap.set(emojis[idx], user.id);
+    claimedUsers.add(user.id);
+    channel.send(`✅ ${positions[idx]} claimed by <@${user.id}>`);
+
+    // If all 7 claimed, stop early
+    if (claimedMap.size >= 7) {
+      done = true;
+      collector.stop('full');
     }
   });
 
-  // after 1 minute ping if not full
+  // After 1 minute, ping if still under 7
   setTimeout(async () => {
-    if (!done && claimed.size < 7) {
-      await channel.send({ content: '@here need more reacts to start!', allowedMentions: { parse: ['here'] } });
+    if (!done && claimedMap.size < 7) {
+      await channel.send({
+        content: '@here need more reacts to start!',
+        allowedMentions: { parse: ['here'] }
+      });
     }
   }, 60_000);
 
+  // When collector ends
   collector.on('end', async (_, reason) => {
-    if (!done && claimed.size < 7) {
+    if (!done && claimedMap.size < 7) {
       await channel.send('❌ Not enough players reacted. Friendly cancelled.');
       active.delete(channel.id);
       return;
     }
 
-    // show assignments
+    // Show final assignments
     const lines = positions.map((pos, i) => {
-      const uid = claimed.get(emojis[i]);
+      const uid = claimedMap.get(emojis[i]);
       return `${pos} — ${uid ? `<@${uid}>` : 'OPEN'}`;
     });
     await channel.send('✅ Positions assigned:\n' + lines.join('\n'));
 
-    // wait for Roblox link from host in same channel
+    // Wait for host to post Roblox link in same channel
     const filter = msg =>
       msg.author.id === hostMember.id &&
       msg.channel.id === channel.id &&
@@ -133,12 +144,12 @@ async function runHostFriendly(channel, hostMember) {
 
     linkCollector.on('collect', async msg => {
       const link = msg.content.trim();
-      for (const uid of claimed.values()) {
+      for (const uid of claimedMap.values()) {
         try {
           const u = await client.users.fetch(uid);
           await u.send(`Here’s the friendly, join up: ${link}`);
         } catch {
-          console.error('DM failed for user', uid);
+          console.error('❌ DM failed for', uid);
         }
       }
       await channel.send('✅ DMs sent to all players!');
@@ -154,7 +165,7 @@ async function runHostFriendly(channel, hostMember) {
   });
 }
 
-// handle prefix
+// Handle `!hostfriendly`
 client.on('messageCreate', async msg => {
   if (msg.author.bot) return;
   if (msg.content === '!hostfriendly') {
@@ -162,12 +173,12 @@ client.on('messageCreate', async msg => {
   }
 });
 
-// handle slash
-client.on(Events.InteractionCreate, async interaction => {
-  if (!interaction.isChatInputCommand()) return;
-  if (interaction.commandName === 'hostfriendly') {
-    await interaction.reply({ content: 'Hosting Parma FC friendly…', ephemeral: true });
-    await runHostFriendly(interaction.channel, interaction.member);
+// Handle `/hostfriendly`
+client.on(Events.InteractionCreate, async inter => {
+  if (!inter.isChatInputCommand()) return;
+  if (inter.commandName === 'hostfriendly') {
+    await inter.reply({ content: 'Hosting Parma FC friendly…', ephemeral: true });
+    await runHostFriendly(inter.channel, inter.member);
   }
 });
 
