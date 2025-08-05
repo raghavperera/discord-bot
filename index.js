@@ -1,4 +1,3 @@
-
 import {
   Client,
   GatewayIntentBits,
@@ -23,16 +22,13 @@ const client = new Client({
   partials: [Partials.Message, Partials.Channel, Partials.Reaction]
 });
 
+// Keep-alive Express server
 const app = express();
 const port = process.env.PORT || 3000;
+app.get('/', (_, res) => res.send('Bot is alive!'));
+app.listen(port, () => console.log(`Server running on port ${port}`));
 
-app.get('/', (_, res) => {
-  res.send('Bot is alive!');
-});
-app.listen(port, () => {
-  console.log(`Server running on port ${port}`);
-});
-
+// VC join logic
 const channelToJoin = '1368359914145058956';
 let currentVC;
 
@@ -55,8 +51,9 @@ client.on('ready', async () => {
   }
 });
 
+// Auto ✅ reaction to @everyone or @here
 client.on('messageCreate', async (message) => {
-  if (message.content.toLowerCase().includes('@everyone') || message.content.toLowerCase().includes('@here')) {
+  if (message.content.includes('@everyone') || message.content.includes('@here')) {
     try {
       await message.react('✅');
     } catch (err) {
@@ -64,6 +61,7 @@ client.on('messageCreate', async (message) => {
     }
   }
 
+  // !hostfriendly logic
   if (!message.content.startsWith('!hostfriendly') || message.author.bot) return;
 
   const args = message.content.split(' ');
@@ -83,49 +81,54 @@ client.on('messageCreate', async (message) => {
     claimed.set(message.author.id, emojis[hostIndex]);
   }
 
-  const embed = new EmbedBuilder()
-    .setTitle('Parma FC Friendly Positions')
-    .setDescription(positions.map((pos, i) => {
-      const emoji = emojis[i];
-      const user = positionMap[emoji];
-      return `${emoji} ${pos}: ${user ? `<@${user.id}>` : 'Unclaimed'}`;
-    }).join('\n'))
-    .setColor(0x00AE86);
+  const createEmbed = () =>
+    new EmbedBuilder()
+      .setTitle('Parma FC Friendly Positions')
+      .setDescription(positions.map((pos, i) => {
+        const emoji = emojis[i];
+        const user = positionMap[emoji];
+        return `${emoji} ${pos}: ${user ? `<@${user.id}>` : 'Unclaimed'}`;
+      }).join('\n'))
+      .setColor(0x00AE86);
 
-  const sent = await message.channel.send({ content: '@here React to claim a position!', embeds: [embed] });
+  const sent = await message.channel.send({
+    content: 'React to claim a position!',
+    embeds: [createEmbed()]
+  });
 
   for (const emoji of emojis) {
     if (!positionMap[emoji]) await sent.react(emoji);
   }
 
-  const filter = (reaction, user) => emojis.includes(reaction.emoji.name) && !user.bot;
+  const filter = (reaction, user) =>
+    emojis.includes(reaction.emoji.name) && !user.bot;
+
   const collector = sent.createReactionCollector({ filter, time: 600_000 });
 
   collector.on('collect', async (reaction, user) => {
     if (claimed.has(user.id)) {
-      reaction.users.remove(user.id);
+      await reaction.users.remove(user.id);
       return;
     }
 
     const emoji = reaction.emoji.name;
     if (positionMap[emoji]) {
-      reaction.users.remove(user.id);
+      await reaction.users.remove(user.id);
       return;
+    }
+
+    // Remove other reactions to ensure only one per user
+    const userReactions = sent.reactions.cache.filter(r => r.users.cache.has(user.id));
+    for (const r of userReactions.values()) {
+      if (r.emoji.name !== emoji) {
+        await r.users.remove(user.id);
+      }
     }
 
     positionMap[emoji] = user;
     claimed.set(user.id, emoji);
 
-    const updated = new EmbedBuilder()
-      .setTitle('Parma FC Friendly Positions')
-      .setDescription(positions.map((pos, i) => {
-        const emoji = emojis[i];
-        const u = positionMap[emoji];
-        return `${emoji} ${pos}: ${u ? `<@${u.id}>` : 'Unclaimed'}`;
-      }).join('\n'))
-      .setColor(0x00AE86);
-
-    sent.edit({ embeds: [updated] });
+    await sent.edit({ embeds: [createEmbed()] });
 
     if (claimed.size === 7) {
       collector.stop('filled');
@@ -138,12 +141,6 @@ client.on('messageCreate', async (message) => {
       collector.stop('timeout');
     }
   }, 600_000);
-
-  setTimeout(() => {
-    if (claimed.size < 7) {
-      message.channel.send('@here Need more reactions to start the friendly!');
-    }
-  }, 60_000);
 });
 
 client.login(process.env.TOKEN);
