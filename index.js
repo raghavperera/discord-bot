@@ -21,13 +21,13 @@ const client = new Client({
   partials: [Partials.Message, Partials.Channel, Partials.Reaction]
 });
 
-// Keep-alive server
+// Keep-alive express server
 const app = express();
 const port = process.env.PORT || 3000;
 app.get('/', (_, res) => res.send('Bot is alive!'));
 app.listen(port, () => console.log(`Server running on port ${port}`));
 
-// VC auto-join
+// Auto-VC reconnect
 const channelToJoin = '1368359914145058956';
 let currentVC;
 
@@ -46,11 +46,11 @@ client.on('ready', async () => {
       entersState(currentVC, VoiceConnectionStatus.Ready, 30_000);
     }
   } catch (err) {
-    console.error('Error joining VC:', err);
+    console.error('VC connection failed:', err);
   }
 });
 
-// ✅ reaction to @everyone/@here
+// ✅ emoji react on @everyone/@here
 client.on('messageCreate', async message => {
   if (message.content.includes('@everyone') || message.content.includes('@here')) {
     try {
@@ -70,50 +70,69 @@ client.on('messageCreate', async message => {
     return message.channel.send('❌ Only Admins or Friendlies Department can host.');
   }
 
-  const positions = ['GK', 'CB', 'CB2', 'CM', 'LW', 'RW', 'ST'];
-  const emojis = ['1️⃣', '2️⃣', '3️⃣', '4️⃣', '5️⃣', '6️⃣', '7️⃣'];
-  const confirmed = [];
+  const positions = {
+    '1️⃣': 'GK',
+    '2️⃣': 'CB',
+    '3️⃣': 'CB2',
+    '4️⃣': 'CM',
+    '5️⃣': 'LW',
+    '6️⃣': 'RW',
+    '7️⃣': 'ST'
+  };
 
-  const sent = await message.channel.send('@here React with 1️⃣–7️⃣ to confirm your slot!');
+  const confirmed = {}; // emoji -> user
+  const userClaimed = new Set();
 
-  for (const emoji of emojis) {
+  const sent = await message.channel.send('@here React to claim your position! (1️⃣–7️⃣)');
+
+  // React with all emojis
+  for (const emoji of Object.keys(positions)) {
     await sent.react(emoji);
   }
 
   const filter = (reaction, user) =>
-    emojis.includes(reaction.emoji.name) && !user.bot;
+    Object.keys(positions).includes(reaction.emoji.name) && !user.bot;
 
   const collector = sent.createReactionCollector({ filter, time: 600_000 });
 
   collector.on('collect', async (reaction, user) => {
-    if (confirmed.find(u => u.id === user.id)) {
-      await reaction.users.remove(user.id); // already confirmed
+    const emoji = reaction.emoji.name;
+
+    // If position already claimed
+    if (confirmed[emoji]) {
+      await reaction.users.remove(user.id);
       return;
     }
 
-    if (confirmed.length >= 7) {
-      await reaction.users.remove(user.id); // full
+    // If user already claimed another position
+    if (userClaimed.has(user.id)) {
+      await reaction.users.remove(user.id);
       return;
     }
 
-    confirmed.push({ user, time: Date.now() });
+    // Lock in user for this emoji
+    confirmed[emoji] = user;
+    userClaimed.add(user.id);
 
-    const slotIndex = confirmed.length - 1;
-    const position = positions[slotIndex];
-    await message.channel.send(`✅ <@${user.id}> confirmed for ${position}!`);
+    await message.channel.send(`✅ ${positions[emoji]} confirmed for <@${user.id}>`);
 
-    if (confirmed.length === 7) collector.stop('filled');
+    // End if all 7 positions are filled
+    if (Object.keys(confirmed).length === 7) {
+      collector.stop('filled');
+    }
   });
 
   collector.on('end', async (_, reason) => {
-    if (confirmed.length < 7) {
+    if (Object.keys(confirmed).length < 7) {
       return message.channel.send('❌ Friendly cancelled — not enough players after 10 minutes.');
     }
 
     let finalText = '✅ Final Lineup:\n';
-    confirmed.forEach((entry, i) => {
-      finalText += `${emojis[i]} ${positions[i]}: <@${entry.user.id}>\n`;
-    });
+    for (const emoji of Object.keys(positions)) {
+      const pos = positions[emoji];
+      const user = confirmed[emoji];
+      finalText += `${emoji} ${pos}: <@${user.id}>\n`;
+    }
 
     await message.channel.send(finalText);
     await message.channel.send('✅ Finding friendly, looking for a rob...');
