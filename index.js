@@ -29,9 +29,9 @@ const wait = ms => new Promise(res => setTimeout(res, ms));
 const token = process.env.DISCORD_TOKEN;
 const voiceChannelId = '1368359914145058956';
 
-const emojis = ['1️⃣','2️⃣','3️⃣','4️⃣','5️⃣','6️⃣','7️⃣'];
+const emojis    = ['1️⃣','2️⃣','3️⃣','4️⃣','5️⃣','6️⃣','7️⃣'];
 const positions = ['GK','CB','CB2','CM','LW','RW','ST'];
-const active = new Set();
+const active    = new Set();
 
 // === VOICE CONNECTION ===
 async function connectToVC(guild) {
@@ -78,61 +78,69 @@ async function runHostFriendly(channel, hostMember, hostPositionInput) {
     await channel.send('❌ Only Admins or members of **Friendlies Department** can host.');
     return;
   }
-
   if (active.has(channel.id)) {
     await channel.send('❌ A friendly is already being hosted in this channel.');
     return;
   }
 
-  const positionIndex = positions.findIndex(p => p.toLowerCase() === hostPositionInput?.toLowerCase());
+  // Validate host position argument
+  const positionIndex = hostPositionInput
+    ? positions.findIndex(p => p.toLowerCase() === hostPositionInput.toLowerCase())
+    : -1;
   if (hostPositionInput && positionIndex === -1) {
     await channel.send(`❌ Invalid position. Valid positions: ${positions.join(', ')}`);
     return;
   }
 
   active.add(channel.id);
-  const claimed = new Map();
-  const claimedUsers = new Set();
 
+  // Track claims
+  const claimed     = new Map();   // emoji index → userID
+  const claimedUsers = new Set();  // userIDs
+
+  // Pre-assign host position
   if (positionIndex !== -1) {
     claimed.set(positionIndex, hostMember.id);
     claimedUsers.add(hostMember.id);
   }
 
+  // Build embed text
   const formatMessage = () => {
     return (
       `**PARMA FC 7v7 FRIENDLY**\n\n` +
       emojis.map((emoji, i) => {
-        const userId = claimed.get(i);
-        return `${emoji} ${positions[i]} - ${userId ? `<@${userId}>` : 'Unclaimed'}`;
+        const uid = claimed.get(i);
+        return `${emoji} ${positions[i]} - ${uid ? `<@${uid}>` : 'Unclaimed'}`;
       }).join('\n')
     );
   };
 
-  const ann = await channel.send(formatMessage());
-  for (const emoji of emojis) await ann.react(emoji);
+  // Send initial live embed, ping @here
+  const ann = await channel.send({
+    content: '@here',
+    embeds: [],
+    allowedMentions: { parse: ['here'] }
+  });
+  // Immediately edit to include the embed text
+  await ann.edit(formatMessage());
+
+  for (const e of emojis) await ann.react(e);
 
   let done = claimed.size >= 7;
-
-  const collector = ann.createReactionCollector({ time: 10 * 60_000 });
+  const collector = ann.createReactionCollector({ time: 10 * 60_000 }); // 10 minutes
 
   collector.on('collect', async (reaction, user) => {
     if (user.bot || done) return;
-
-    const emoji = reaction.emoji.name;
-    const idx = emojis.indexOf(emoji);
+    const idx = emojis.indexOf(reaction.emoji.name);
     if (idx === -1) return;
 
-    if (claimed.has(idx)) {
+    // Already taken?
+    if (claimed.has(idx) || claimedUsers.has(user.id)) {
       reaction.users.remove(user.id).catch(() => {});
       return;
     }
 
-    if (claimedUsers.has(user.id)) {
-      reaction.users.remove(user.id).catch(() => {});
-      return;
-    }
-
+    // Lock in after 3s
     setTimeout(async () => {
       if (claimed.has(idx) || claimedUsers.has(user.id)) return;
       claimed.set(idx, user.id);
@@ -153,13 +161,14 @@ async function runHostFriendly(channel, hostMember, hostPositionInput) {
       return;
     }
 
-    const finalList = emojis.map((emoji, i) => {
-      const userId = claimed.get(i);
-      return `${positions[i]} — ${userId ? `<@${userId}>` : 'OPEN'}`;
+    // Final lineup
+    const finalLines = emojis.map((e, i) => {
+      const uid = claimed.get(i);
+      return `${positions[i]} — ${uid ? `<@${uid}>` : 'OPEN'}`;
     });
+    await channel.send('✅ Final Positions:\n' + finalLines.join('\n'));
 
-    await channel.send('✅ Final Positions:\n' + finalList.join('\n'));
-
+    // Collect host link and DM
     const filter = msg =>
       msg.author.id === hostMember.id &&
       msg.channel.id === channel.id &&
@@ -197,7 +206,7 @@ client.on('messageCreate', async msg => {
 
   if (msg.content.startsWith('!hostfriendly')) {
     const args = msg.content.split(' ');
-    const pos = args[1];
+    const pos  = args[1];  // e.g. "GK"
     await runHostFriendly(msg.channel, msg.member, pos);
   }
 
