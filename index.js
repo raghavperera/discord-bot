@@ -78,11 +78,6 @@ async function runHostFriendly(channel, hostMember, hostPositionInput) {
     await channel.send('❌ Only Admins or members of **Friendlies Department** can host.');
     return;
   }
-  if (active.has(channel.id)) {
-    await channel.send('❌ A friendly is already being hosted in this channel.');
-    return;
-  }
-
   // Validate host position argument
   const positionIndex = hostPositionInput
     ? positions.findIndex(p => p.toLowerCase() === hostPositionInput.toLowerCase())
