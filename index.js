@@ -81,6 +81,7 @@ client.on('messageCreate', async (message) => {
     claimed.set(message.author.id, emojis[hostIndex]);
   }
 
+  // Helper to build the embed
   const createEmbed = () =>
     new EmbedBuilder()
       .setTitle('Parma FC Friendly Positions')
@@ -91,11 +92,14 @@ client.on('messageCreate', async (message) => {
       }).join('\n'))
       .setColor(0x00AE86);
 
+  // Send initial embed with allowedMentions
   const sent = await message.channel.send({
     content: 'React to claim a position!',
-    embeds: [createEmbed()]
+    embeds: [createEmbed()],
+    allowedMentions: { users: [] }
   });
 
+  // React with number emojis
   for (const emoji of emojis) {
     if (!positionMap[emoji]) await sent.react(emoji);
   }
@@ -106,18 +110,20 @@ client.on('messageCreate', async (message) => {
   const collector = sent.createReactionCollector({ filter, time: 600_000 });
 
   collector.on('collect', async (reaction, user) => {
+    // Prevent multiple positions per user
     if (claimed.has(user.id)) {
       await reaction.users.remove(user.id);
       return;
     }
 
     const emoji = reaction.emoji.name;
+    // Prevent claiming an already taken spot
     if (positionMap[emoji]) {
       await reaction.users.remove(user.id);
       return;
     }
 
-    // Remove other reactions to ensure only one per user
+    // Remove any other reactions by this user
     const userReactions = sent.reactions.cache.filter(r => r.users.cache.has(user.id));
     for (const r of userReactions.values()) {
       if (r.emoji.name !== emoji) {
@@ -128,13 +134,18 @@ client.on('messageCreate', async (message) => {
     positionMap[emoji] = user;
     claimed.set(user.id, emoji);
 
-    await sent.edit({ embeds: [createEmbed()] });
+    // Edit embed with allowedMentions so pings show up
+    await sent.edit({
+      embeds: [createEmbed()],
+      allowedMentions: { users: [] }
+    });
 
     if (claimed.size === 7) {
       collector.stop('filled');
     }
   });
 
+  // Cancel if not filled after 10 minutes
   setTimeout(() => {
     if (claimed.size < 7) {
       message.channel.send('❌ Friendly cancelled — not enough players after 10 minutes.');
