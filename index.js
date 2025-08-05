@@ -61,7 +61,7 @@ client.on('messageCreate', async (message) => {
     }
   }
 
-  // !hostfriendly logic
+  // !hostfriendly command for Parma FC
   if (!message.content.startsWith('!hostfriendly') || message.author.bot) return;
 
   const args = message.content.split(' ');
@@ -70,6 +70,13 @@ client.on('messageCreate', async (message) => {
   const emojis = ['1️⃣', '2️⃣', '3️⃣', '4️⃣', '5️⃣', '6️⃣', '7️⃣'];
   const positionMap = {};
   const claimed = new Map();
+
+  if (
+    !message.member.permissions.has(PermissionsBitField.Flags.Administrator) &&
+    !message.member.roles.cache.some(r => r.name === 'Friendlies Department')
+  ) {
+    return message.channel.send('❌ Only Admins or members of **Friendlies Department** can host.');
+  }
 
   if (hostPosition && !positions.includes(hostPosition)) {
     return message.channel.send(`❌ Invalid position. Choose one of: ${positions.join(', ')}`);
@@ -80,6 +87,80 @@ client.on('messageCreate', async (message) => {
     positionMap[emojis[hostIndex]] = message.author;
     claimed.set(message.author.id, emojis[hostIndex]);
   }
+
+  const createEmbed = () =>
+    new EmbedBuilder()
+      .setTitle('Parma FC Friendly Positions')
+      .setDescription(positions.map((pos, i) => {
+        const emoji = emojis[i];
+        const user = positionMap[emoji];
+        return `${emoji} ${pos}: ${user ? `<@${user.id}>` : 'Unclaimed'}`;
+      }).join('\n'))
+      .setColor(0x00AE86);
+
+  const sent = await message.channel.send({
+    content: '@here React to claim a position!',
+    embeds: [createEmbed()]
+  });
+
+  for (const emoji of emojis) {
+    if (!positionMap[emoji]) await sent.react(emoji);
+  }
+
+  const filter = (reaction, user) => emojis.includes(reaction.emoji.name) && !user.bot;
+  const collector = sent.createReactionCollector({ filter, time: 600_000 });
+
+  collector.on('collect', async (reaction, user) => {
+    if (claimed.has(user.id)) {
+      await reaction.users.remove(user.id);
+      return;
+    }
+
+    const emoji = reaction.emoji.name;
+    if (positionMap[emoji]) {
+      await reaction.users.remove(user.id);
+      return;
+    }
+
+    const userReactions = sent.reactions.cache.filter(r => r.users.cache.has(user.id));
+    for (const r of userReactions.values()) {
+      if (r.emoji.name !== emoji) {
+        await r.users.remove(user.id);
+      }
+    }
+
+    positionMap[emoji] = user;
+    claimed.set(user.id, emoji);
+
+    await sent.edit({ embeds: [createEmbed()] });
+
+    if (claimed.size === 7) {
+      collector.stop('filled');
+    }
+  });
+
+  setTimeout(() => {
+    if (claimed.size < 7) {
+      message.channel.send('❌ Friendly cancelled — not enough players after 10 minutes.');
+      collector.stop('timeout');
+    }
+  }, 600_000);
+
+  collector.on('end', async (_, reason) => {
+    if (reason !== 'filled') return;
+
+    const finalEmbed = new EmbedBuilder()
+      .setTitle('Final Lineup for Parma FC')
+      .setDescription(positions.map((pos, i) => {
+        const emoji = emojis[i];
+        const user = positionMap[emoji];
+        return `${emoji} ${pos}: ${user ? `<@${user.id}>` : 'Unclaimed'}`;
+      }).join('\n'))
+      .setColor(0x00AE86);
+
+    await message.channel.send({ embeds: [finalEmbed] });
+    await message.channel.send('✅ Finding friendly, looking for a rob...');
+  });}
 
   // Helper to build the embed
   const createEmbed = () =>
