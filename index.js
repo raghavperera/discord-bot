@@ -1,11 +1,24 @@
+
 import {
   Client,
   GatewayIntentBits,
   Partials,
-  PermissionsBitField
+  PermissionsBitField,
+  EmbedBuilder,
+  ActivityType,
 } from 'discord.js';
-import { joinVoiceChannel, entersState, VoiceConnectionStatus } from '@discordjs/voice';
+import {
+  joinVoiceChannel,
+  entersState,
+  VoiceConnectionStatus,
+  createAudioPlayer,
+  createAudioResource,
+  AudioPlayerStatus,
+  NoSubscriberBehavior,
+} from '@discordjs/voice';
 import express from 'express';
+import ytdl from 'ytdl-core';
+import ytsr from 'ytsr';
 import 'dotenv/config';
 
 const client = new Client({
@@ -13,130 +26,158 @@ const client = new Client({
     GatewayIntentBits.Guilds,
     GatewayIntentBits.GuildMessages,
     GatewayIntentBits.GuildMembers,
+    GatewayIntentBits.GuildVoiceStates,
     GatewayIntentBits.MessageContent,
     GatewayIntentBits.GuildMessageReactions,
     GatewayIntentBits.DirectMessages,
-    GatewayIntentBits.GuildVoiceStates
   ],
-  partials: [Partials.Message, Partials.Channel, Partials.Reaction]
+  partials: [Partials.Channel, Partials.Message, Partials.Reaction],
 });
 
-// Keep-alive express server
-const app = express();
-const port = process.env.PORT || 3000;
-app.get('/', (_, res) => res.send('Bot is alive!'));
-app.listen(port, () => console.log(`Server running on port ${port}`));
+express()
+  .listen(process.env.PORT || 3000, () => console.log('Server is up'));
 
-// Auto-VC reconnect
-const channelToJoin = '1368359914145058956';
-let currentVC;
+const VC_ID = '1368359914145058956';
+let reconnecting = false;
 
-client.on('ready', async () => {
+async function connectVC(guild) {
+  const channel = await guild.channels.fetch(VC_ID);
+  if (!channel?.isVoiceBased()) return;
+  const conn = joinVoiceChannel({
+    channelId: VC_ID,
+    guildId: guild.id,
+    adapterCreator: guild.voiceAdapterCreator,
+    selfMute: true,
+  });
+  await entersState(conn, VoiceConnectionStatus.Ready, 30_000);
+  return conn;
+}
+
+client.once('ready', async () => {
   console.log(`Logged in as ${client.user.tag}`);
-  try {
-    const guild = await client.guilds.fetch(process.env.GUILD_ID);
-    const channel = await guild.channels.fetch(channelToJoin);
-    if (channel && channel.isVoiceBased()) {
-      currentVC = joinVoiceChannel({
-        channelId: channel.id,
-        guildId: guild.id,
-        adapterCreator: guild.voiceAdapterCreator,
-        selfMute: true
-      });
-      entersState(currentVC, VoiceConnectionStatus.Ready, 30_000);
-    }
-  } catch (err) {
-    console.error('VC connection failed:', err);
+  client.user.setActivity('Spotify', { type: ActivityType.Listening });
+  const guild = client.guilds.cache.get(process.env.GUILD_ID);
+  if (guild) await connectVC(guild);
+});
+
+client.on('voiceStateUpdate', (oldS, newS) => {
+  if (
+    oldS.channelId === VC_ID &&
+    !newS.channelId &&
+    oldS.member.user.id === client.user.id &&
+    !reconnecting
+  ) {
+    reconnecting = true;
+    setTimeout(async () => {
+      const guild = oldS.guild;
+      await connectVC(guild);
+      reconnecting = false;
+    }, 5000);
   }
 });
 
-// ✅ emoji react on @everyone/@here
-client.on('messageCreate', async message => {
-  if (message.content.includes('@everyone') || message.content.includes('@here')) {
-    try {
-      await message.react('✅');
-    } catch (err) {
-      console.error('React fail:', err);
-    }
-  }
-
-  // !hostfriendly command
-  if (!message.content.startsWith('!hostfriendly') || message.author.bot) return;
-
+client.on('messageCreate', async (message) => {
   if (
-    !message.member.permissions.has(PermissionsBitField.Flags.Administrator) &&
-    !message.member.roles.cache.some(r => r.name === 'Friendlies Department')
+    !message.author.bot &&
+    (message.content.includes('@everyone') || message.content.includes('@here'))
   ) {
-    return message.channel.send('❌ Only Admins or Friendlies Department can host.');
+    message.react('✅').catch(() => {});
   }
 
-  const positions = {
-    '1️⃣': 'GK',
-    '2️⃣': 'CB',
-    '3️⃣': 'CB2',
-    '4️⃣': 'CM',
-    '5️⃣': 'LW',
-    '6️⃣': 'RW',
-    '7️⃣': 'ST'
-  };
+  const [cmd, ...args] = message.content.trim().split(/ +/);
+  if (cmd === '!hostfriendly') {
+    const canHost =
+      message.member.permissions.has(PermissionsBitField.Flags.Administrator) ||
+      message.member.roles.cache.some((r) => r.name === 'Friendlies Department');
+    if (!canHost) return;
 
-  const confirmed = {}; // emoji -> user
-  const userClaimed = new Set();
+    const names = ['GK', 'CB', 'CB2', 'CM', 'LW', 'RW', 'ST'];
+    const emojis = ['1️⃣', '2️⃣', '3️⃣', '4️⃣', '5️⃣', '6️⃣', '7️⃣'];
+    const positions = {};
+    const claimed = new Set();
 
-  const sent = await message.channel.send('@here React to claim your position! (1️⃣–7️⃣)');
+    const hostPos = args[0]?.toUpperCase();
+    const hostIndex = names.indexOf(hostPos);
+    if (hostIndex !== -1) {
+      positions[emojis[hostIndex]] = message.author;
+      claimed.add(message.author.id);
+      await message.channel.send(`✅ ${hostPos} confirmed for <@${message.author.id}>`);
+    }
 
-  // React with all emojis
-  for (const emoji of Object.keys(positions)) {
-    await sent.react(emoji);
+    const getStatusText = () =>
+      `**PARMA FC 7v7 FRIENDLY**
+` +
+      emojis.map((emoji, i) =>
+        `React ${emoji} → ${names[i]}${positions[emoji] ? ` — ✅ <@${positions[emoji].id}> confirmed` : ''}`
+      ).join('
+') + `
+@here`;
+
+    const embed = new EmbedBuilder()
+      .setDescription(getStatusText())
+      .setColor(0x00ae86);
+
+    const sent = await message.channel.send({
+      embeds: [embed],
+      allowedMentions: { parse: ['everyone'] },
+    });
+
+    for (const emoji of emojis) {
+      if (!positions[emoji]) await sent.react(emoji);
+    }
+
+    const filter = (reaction, user) =>
+      emojis.includes(reaction.emoji.name) && !user.bot;
+
+    const collector = sent.createReactionCollector({ filter, time: 600000 });
+
+    collector.on('collect', async (reaction, user) => {
+      const emoji = reaction.emoji.name;
+
+      if (positions[emoji]) return reaction.users.remove(user.id);
+      if (claimed.has(user.id)) return reaction.users.remove(user.id);
+
+      positions[emoji] = user;
+      claimed.add(user.id);
+
+      await message.channel.send(`✅ ${names[emojis.indexOf(emoji)]} confirmed for <@${user.id}>`);
+
+      embed.setDescription(getStatusText());
+      await sent.edit({ embeds: [embed] });
+
+      if (Object.keys(positions).length === 7) collector.stop('filled');
+    });
+
+    setTimeout(() => {
+      if (Object.keys(positions).length < 7) {
+        message.channel.send({
+          content: '@here Need more reacts to start the friendly!',
+          allowedMentions: { parse: ['everyone'] },
+        });
+      }
+    }, 60000);
+
+    setTimeout(() => {
+      if (Object.keys(positions).length < 7) {
+        message.channel.send('❌ Friendly cancelled — not enough players.');
+        collector.stop();
+      }
+    }, 600000);
+
+    collector.on('end', async (_, reason) => {
+      if (Object.keys(positions).length < 7) return;
+
+      let finalText = '✅ Final Lineup:
+';
+      emojis.forEach((emoji, i) => {
+        finalText += `${emoji} ${names[i]}: <@${positions[emoji].id}>
+`;
+      });
+
+      await message.channel.send(finalText);
+      await message.channel.send('✅ Finding friendly, looking for a rob...');
+    });
   }
-
-  const filter = (reaction, user) =>
-    Object.keys(positions).includes(reaction.emoji.name) && !user.bot;
-
-  const collector = sent.createReactionCollector({ filter, time: 600_000 });
-
-  collector.on('collect', async (reaction, user) => {
-    const emoji = reaction.emoji.name;
-
-    // If position already claimed
-    if (confirmed[emoji]) {
-      await reaction.users.remove(user.id);
-      return;
-    }
-
-    // If user already claimed another position
-    if (userClaimed.has(user.id)) {
-      await reaction.users.remove(user.id);
-      return;
-    }
-
-    // Lock in user for this emoji
-    confirmed[emoji] = user;
-    userClaimed.add(user.id);
-
-    await message.channel.send(`✅ ${positions[emoji]} confirmed for <@${user.id}>`);
-
-    // End if all 7 positions are filled
-    if (Object.keys(confirmed).length === 7) {
-      collector.stop('filled');
-    }
-  });
-
-  collector.on('end', async (_, reason) => {
-    if (Object.keys(confirmed).length < 7) {
-      return message.channel.send('❌ Friendly cancelled — not enough players after 10 minutes.');
-    }
-
-    let finalText = '✅ Final Lineup:\n';
-    for (const emoji of Object.keys(positions)) {
-      const pos = positions[emoji];
-      const user = confirmed[emoji];
-      finalText += `${emoji} ${pos}: <@${user.id}>\n`;
-    }
-
-    await message.channel.send(finalText);
-    await message.channel.send('✅ Finding friendly, looking for a rob...');
-  });
 });
 
 client.login(process.env.TOKEN);
