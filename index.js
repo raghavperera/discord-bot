@@ -2,8 +2,7 @@ import {
   Client,
   GatewayIntentBits,
   Partials,
-  PermissionsBitField,
-  EmbedBuilder
+  PermissionsBitField
 } from 'discord.js';
 import { joinVoiceChannel, entersState, VoiceConnectionStatus } from '@discordjs/voice';
 import express from 'express';
@@ -28,9 +27,10 @@ const port = process.env.PORT || 3000;
 app.get('/', (_, res) => res.send('Bot is alive!'));
 app.listen(port, () => console.log(`Server running on port ${port}`));
 
-// VC reconnect
+// VC auto-join
 const channelToJoin = '1368359914145058956';
 let currentVC;
+
 client.on('ready', async () => {
   console.log(`Logged in as ${client.user.tag}`);
   try {
@@ -50,23 +50,18 @@ client.on('ready', async () => {
   }
 });
 
-// Auto ✅ on @everyone/@here
+// ✅ reaction to @everyone/@here
 client.on('messageCreate', async message => {
   if (message.content.includes('@everyone') || message.content.includes('@here')) {
     try {
       await message.react('✅');
     } catch (err) {
-      console.error('Failed to react:', err);
+      console.error('React fail:', err);
     }
   }
 
+  // !hostfriendly command
   if (!message.content.startsWith('!hostfriendly') || message.author.bot) return;
-
-  const args = message.content.split(' ');
-  const hostPosition = args[1]?.toUpperCase();
-  const positions = ['GK', 'CB', 'CB2', 'CM', 'LW', 'RW', 'ST'];
-  const emojis = ['1️⃣', '2️⃣', '3️⃣', '4️⃣', '5️⃣', '6️⃣', '7️⃣'];
-  const confirmed = [];
 
   if (
     !message.member.permissions.has(PermissionsBitField.Flags.Administrator) &&
@@ -75,15 +70,11 @@ client.on('messageCreate', async message => {
     return message.channel.send('❌ Only Admins or Friendlies Department can host.');
   }
 
-  const embed = new EmbedBuilder()
-    .setTitle('Parma FC Friendly — Confirmed Slots')
-    .setDescription('React with 1️⃣ to 7️⃣ to claim a slot.\n\nFirst 7 unique users to react will be locked in.')
-    .setColor(0x00AE86);
+  const positions = ['GK', 'CB', 'CB2', 'CM', 'LW', 'RW', 'ST'];
+  const emojis = ['1️⃣', '2️⃣', '3️⃣', '4️⃣', '5️⃣', '6️⃣', '7️⃣'];
+  const confirmed = [];
 
-  const sent = await message.channel.send({
-    content: '@here Confirm your slot by reacting!',
-    embeds: [embed]
-  });
+  const sent = await message.channel.send('@here React with 1️⃣–7️⃣ to confirm your slot!');
 
   for (const emoji of emojis) {
     await sent.react(emoji);
@@ -106,7 +97,10 @@ client.on('messageCreate', async message => {
     }
 
     confirmed.push({ user, time: Date.now() });
-    console.log(`Confirmed: ${user.tag}`);
+
+    const slotIndex = confirmed.length - 1;
+    const position = positions[slotIndex];
+    await message.channel.send(`✅ <@${user.id}> confirmed for ${position}!`);
 
     if (confirmed.length === 7) collector.stop('filled');
   });
@@ -116,17 +110,12 @@ client.on('messageCreate', async message => {
       return message.channel.send('❌ Friendly cancelled — not enough players after 10 minutes.');
     }
 
-    const finalEmbed = new EmbedBuilder()
-      .setTitle('✅ Final Lineup for Parma FC')
-      .setDescription(
-        confirmed
-          .slice(0, 7)
-          .map((entry, index) => `${emojis[index]} ${positions[index]}: <@${entry.user.id}>`)
-          .join('\n')
-      )
-      .setColor(0x00AE86);
+    let finalText = '✅ Final Lineup:\n';
+    confirmed.forEach((entry, i) => {
+      finalText += `${emojis[i]} ${positions[i]}: <@${entry.user.id}>\n`;
+    });
 
-    await message.channel.send({ embeds: [finalEmbed] });
+    await message.channel.send(finalText);
     await message.channel.send('✅ Finding friendly, looking for a rob...');
   });
 });
