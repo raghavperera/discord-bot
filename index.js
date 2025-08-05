@@ -26,17 +26,12 @@ app.get('/', (_, res) => res.send('Bot is alive!'));
 app.listen(3000, () => console.log('Server running'));
 
 const wait = ms => new Promise(res => setTimeout(res, ms));
-
 const token = process.env.DISCORD_TOKEN;
 const voiceChannelId = '1368359914145058956';
 
-const emojis    = ['1️⃣','2️⃣','3️⃣','4️⃣','5️⃣','6️⃣','7️⃣'];
+const emojis = ['1️⃣','2️⃣','3️⃣','4️⃣','5️⃣','6️⃣','7️⃣'];
 const positions = ['GK','CB','CB2','CM','LW','RW','ST'];
-const active    = new Set();
-
-client.once('ready', () => {
-  console.log(`✅ Logged in as ${client.user.tag}`);
-});
+const active = new Set();
 
 // === VOICE CONNECTION ===
 async function connectToVC(guild) {
@@ -56,7 +51,8 @@ async function connectToVC(guild) {
   }
 }
 
-client.on('ready', async () => {
+client.once('ready', async () => {
+  console.log(`✅ Logged in as ${client.user.tag}`);
   const guild = client.guilds.cache.first();
   if (guild) await connectToVC(guild);
 });
@@ -68,13 +64,12 @@ client.on('voiceStateUpdate', async (oldState, newState) => {
     oldState.member?.user.id === client.user.id
   ) {
     await wait(5000);
-    const guild = oldState.guild;
-    await connectToVC(guild);
+    await connectToVC(oldState.guild);
   }
 });
 
 // === FRIENDLY HOSTING ===
-async function runHostFriendly(channel, hostMember) {
+async function runHostFriendly(channel, hostMember, hostPositionInput) {
   const hasPermission =
     hostMember.permissions.has(PermissionsBitField.Flags.Administrator) ||
     hostMember.roles.cache.some(r => r.name === 'Friendlies Department');
@@ -89,26 +84,35 @@ async function runHostFriendly(channel, hostMember) {
     return;
   }
 
+  const positionIndex = positions.findIndex(p => p.toLowerCase() === hostPositionInput?.toLowerCase());
+  if (hostPositionInput && positionIndex === -1) {
+    await channel.send(`❌ Invalid position. Valid positions: ${positions.join(', ')}`);
+    return;
+  }
+
   active.add(channel.id);
-
-  const ann = await channel.send({
-    content:
-      `> **PARMA FC 7v7 FRIENDLY**\n` +
-      `> React 1️⃣ → GK\n` +
-      `> React 2️⃣ → CB\n` +
-      `> React 3️⃣ → CB2\n` +
-      `> React 4️⃣ → CM\n` +
-      `> React 5️⃣ → LW\n` +
-      `> React 6️⃣ → RW\n` +
-      `> React 7️⃣ → ST\n` +
-      `@here`
-  });
-
-  for (const e of emojis) await ann.react(e);
-
-  let done = false;
-  const claimedMap = new Map();
+  const claimed = new Map();
   const claimedUsers = new Set();
+
+  if (positionIndex !== -1) {
+    claimed.set(positionIndex, hostMember.id);
+    claimedUsers.add(hostMember.id);
+  }
+
+  const formatMessage = () => {
+    return (
+      `**PARMA FC 7v7 FRIENDLY**\n\n` +
+      emojis.map((emoji, i) => {
+        const userId = claimed.get(i);
+        return `${emoji} ${positions[i]} - ${userId ? `<@${userId}>` : 'Unclaimed'}`;
+      }).join('\n')
+    );
+  };
+
+  const ann = await channel.send(formatMessage());
+  for (const emoji of emojis) await ann.react(emoji);
+
+  let done = claimed.size >= 7;
 
   const collector = ann.createReactionCollector({ time: 10 * 60_000 });
 
@@ -119,8 +123,7 @@ async function runHostFriendly(channel, hostMember) {
     const idx = emojis.indexOf(emoji);
     if (idx === -1) return;
 
-    if (claimedMap.has(emoji)) {
-      
+    if (claimed.has(idx)) {
       reaction.users.remove(user.id).catch(() => {});
       return;
     }
@@ -131,41 +134,31 @@ async function runHostFriendly(channel, hostMember) {
     }
 
     setTimeout(async () => {
-      if (claimedUsers.has(user.id)) return;
-      claimedMap.set(emoji, user.id);
+      if (claimed.has(idx) || claimedUsers.has(user.id)) return;
+      claimed.set(idx, user.id);
       claimedUsers.add(user.id);
-      await channel.send(`✅ ${positions[idx]} confirmed for <@${user.id}>`);
+      await ann.edit(formatMessage());
 
-      if (claimedMap.size >= 7) {
+      if (claimed.size >= 7 && !done) {
         done = true;
-        collector.stop('full');
+        collector.stop('filled');
       }
     }, 3000);
   });
 
-  setTimeout(async () => {
-    const totalReacts = Array.from(claimedMap.values()).length;
-    if (!done && totalReacts < 7) {
-      await channel.send({
-        content: '@here not enough reacts yet!',
-        allowedMentions: { parse: ['here'] }
-      });
-    }
-  }, 60_000);
-
-  collector.on('end', async (_, reason) => {
-    if (!done || claimedMap.size < 7) {
+  collector.on('end', async () => {
+    if (!done || claimed.size < 7) {
       await channel.send('❌ Not enough players reacted. Friendly cancelled.');
       active.delete(channel.id);
       return;
     }
 
-    const lines = positions.map((pos, i) => {
-      const uid = claimedMap.get(emojis[i]);
-      return `${pos} — ${uid ? `<@${uid}>` : 'OPEN'}`;
+    const finalList = emojis.map((emoji, i) => {
+      const userId = claimed.get(i);
+      return `${positions[i]} — ${userId ? `<@${userId}>` : 'OPEN'}`;
     });
 
-    await channel.send('✅ Final Positions:\n' + lines.join('\n'));
+    await channel.send('✅ Final Positions:\n' + finalList.join('\n'));
 
     const filter = msg =>
       msg.author.id === hostMember.id &&
@@ -176,9 +169,10 @@ async function runHostFriendly(channel, hostMember) {
 
     linkCollector.on('collect', async msg => {
       const link = msg.content.trim();
-      for (const uid of claimedMap.values()) {
+      for (const uid of claimed.values()) {
         try {
           const u = await client.users.fetch(uid);
+          await u.send(`<@${uid}>`);
           await u.send(`Here’s the friendly, join up: ${link}`);
         } catch {
           console.error('❌ Failed to DM', uid);
@@ -201,13 +195,14 @@ async function runHostFriendly(channel, hostMember) {
 client.on('messageCreate', async msg => {
   if (msg.author.bot) return;
 
-  if (msg.content === '!hostfriendly') {
-    await runHostFriendly(msg.channel, msg.member);
+  if (msg.content.startsWith('!hostfriendly')) {
+    const args = msg.content.split(' ');
+    const pos = args[1];
+    await runHostFriendly(msg.channel, msg.member, pos);
   }
 
   if (msg.content === '!joinvc') {
-    const guild = msg.guild;
-    await connectToVC(guild);
+    await connectToVC(msg.guild);
     msg.channel.send('🔊 Joining VC...');
   }
 });
