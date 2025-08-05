@@ -112,31 +112,35 @@ async function runHostFriendly(channel, hostMember) {
 
   const collector = ann.createReactionCollector({ time: 10 * 60_000 });
 
-  collector.on('collect', (reaction, user) => {
+  collector.on('collect', async (reaction, user) => {
     if (user.bot || done) return;
+
     const emoji = reaction.emoji.name;
     const idx = emojis.indexOf(emoji);
     if (idx === -1) return;
+
+    if (claimedMap.has(emoji)) {
+      
+      reaction.users.remove(user.id).catch(() => {});
+      return;
+    }
 
     if (claimedUsers.has(user.id)) {
       reaction.users.remove(user.id).catch(() => {});
       return;
     }
 
-    if (!claimedMap.has(emoji)) {
-      setTimeout(async () => {
-        if (claimedUsers.has(user.id)) return;
-        claimedMap.set(emoji, user.id);
-        claimedUsers.add(user.id);
-        await channel.send(`✅ ${positions[idx]} confirmed for <@${user.id}>`);
-        if (claimedMap.size >= 7) {
-          done = true;
-          collector.stop('full');
-        }
-      }, 3000);
-    } else {
-      reaction.users.remove(user.id).catch(() => {});
-    }
+    setTimeout(async () => {
+      if (claimedUsers.has(user.id)) return;
+      claimedMap.set(emoji, user.id);
+      claimedUsers.add(user.id);
+      await channel.send(`✅ ${positions[idx]} confirmed for <@${user.id}>`);
+
+      if (claimedMap.size >= 7) {
+        done = true;
+        collector.stop('full');
+      }
+    }, 3000);
   });
 
   setTimeout(async () => {
