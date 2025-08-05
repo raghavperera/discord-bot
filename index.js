@@ -389,6 +389,10 @@ client.on('messageCreate', async (message) => {
     message.channel.send({ embeds: [embed] });
   }
 });
-
+// Catch unhandled promise rejections and client errors
+process.on('unhandledRejection', console.error);
+process.on('uncaughtException', console.error);
+client.on('error', console.error);
+client.on('shardError', console.error);
 // Log in the bot with the token (replace 'YOUR_BOT_TOKEN' with actual token)
 client.login('YOUR_BOT_TOKEN');
