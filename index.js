@@ -365,120 +365,142 @@ function playTrack(queue, track) {
     });
 }
 
-// =================== !hostfriendly command ===================
-client.on('messageCreate', async (message) => {
-  if (!message.content.startsWith('!hostfriendly') || message.author.bot) return;
-  if (!message.member.permissions.has(PermissionsBitField.Flags.Administrator) &&
-      !message.member.roles.cache.some(r => r.name === 'Friendlies Department')) {
-    return message.reply('You do not have permission to host a friendly.');
-  }
+// =================== !hostfriendly 
+import { EmbedBuilder } from 'discord.js';
 
-  const positions = ['GK', 'CB', 'CB2', 'CM', 'LW', 'RW', 'ST'];
-  const emojis = ['1️⃣', '2️⃣', '3️⃣', '4️⃣', '5️⃣', '6️⃣', '7️⃣'];
+const allowedRoles = ['Admin', 'Friendlies Department'];
+const positionsMap = {
+  '1️⃣': 'GK',
+  '2️⃣': 'CB',
+  '3️⃣': 'CB2',
+  '4️⃣': 'CM',
+  '5️⃣': 'LW',
+  '6️⃣': 'RW',
+  '7️⃣': 'ST'
+};
 
-  // Parse optional position for host
+client.on('messageCreate', async message => {
+  if (!message.content.startsWith('!hostfriendly')) return;
+  if (message.author.bot) return;
+
   const args = message.content.split(' ').slice(1);
-  const hostPos = args[0]?.toUpperCase();
-  if (hostPos && !positions.includes(hostPos)) {
-    return message.reply(`Invalid position. Choose one of: ${positions.join(', ')}`);
+  const hostPosition = args[0]?.toUpperCase();
+  const guildName = message.guild.name;
+
+  const member = await message.guild.members.fetch(message.author.id);
+  const hasPermission = member.roles.cache.some(role => allowedRoles.includes(role.name));
+
+  if (!hasPermission) return message.reply("❌ You don't have permission to host friendlies.");
+
+  const positionEmojis = Object.keys(positionsMap);
+  const claimed = {};
+  const userClaims = new Map();
+
+  if (hostPosition && !Object.values(positionsMap).includes(hostPosition)) {
+    return message.reply('❌ Invalid position specified.');
   }
 
-  // Track claimed positions and users
-  const positionMap = {};
-  const claimedUsers = new Map();
-
-  // Assign host position if given
-  if (hostPos) {
-    const idx = positions.indexOf(hostPos);
-    positionMap[emojis[idx]] = message.author;
-    claimedUsers.set(message.author.id, emojis[idx]);
+  if (hostPosition) {
+    claimed[hostPosition] = message.author;
+    userClaims.set(message.author.id, hostPosition);
   }
 
-  // Build embed message
-  function buildEmbed() {
-    const lines = positions.map((pos, i) => {
-      const user = positionMap[emojis[i]];
-      return `${emojis[i]} ${pos}: ${user ? `<@${user.id}>` : 'Unclaimed'}`;
-    });
-    return new EmbedBuilder()
-      .setTitle('PARMA FC 7v7 FRIENDLY')
-      .setDescription(lines.join('\n'))
-      .setColor('#00AE86');
-  }
+  const embed = new EmbedBuilder()
+    .setColor('Red')
+    .setTitle(`**${guildName.toUpperCase()} 7v7 FRIENDLY**`)
+    .setDescription(
+      `React 1️⃣ → GK\n` +
+      `React 2️⃣ → CB\n` +
+      `React 3️⃣ → CB2\n` +
+      `React 4️⃣ → CM\n` +
+      `React 5️⃣ → LW\n` +
+      `React 6️⃣ → RW\n` +
+      `React 7️⃣ → ST\n` +
+      (guildName.toLowerCase().includes('parma') ? '@here' : '@everyone')
+    );
 
-  const lineupMessage = await message.channel.send({
-    content: 'React to claim your position!',
-    embeds: [buildEmbed()],
-  });
+  const updateEmbed = () => {
+    embed.setFields(
+      Object.entries(positionsMap).map(([emoji, pos]) => ({
+        name: `${emoji} → ${pos}`,
+        value: claimed[pos] ? `<@${claimed[pos].id}>` : 'Unclaimed',
+        inline: true
+      }))
+    );
+  };
 
-  // React with number emojis except claimed
-  for (const emoji of emojis) {
-    if (!positionMap[emoji]) {
-      await lineupMessage.react(emoji);
-    }
-  }
+  updateEmbed();
+  const msg = await message.channel.send({ embeds: [embed] });
 
-  const filter = (reaction, user) =>
-    emojis.includes(reaction.emoji.name) && !user.bot;
+  for (const emoji of positionEmojis) await msg.react(emoji);
 
-  const collector = lineupMessage.createReactionCollector({ filter, time: 10 * 60 * 1000 });
+  const filter = (reaction, user) => {
+    return positionEmojis.includes(reaction.emoji.name) && !user.bot;
+  };
+
+  const collector = msg.createReactionCollector({ filter, time: 600000 });
 
   collector.on('collect', async (reaction, user) => {
-    // Check if user already claimed a position
-    if (claimedUsers.has(user.id)) {
-      await reaction.users.remove(user.id);
-      return;
-    }
-
-    const emoji = reaction.emoji.name;
-    // Check if position claimed
-    if (positionMap[emoji]) {
-      await reaction.users.remove(user.id);
-      return;
-    }
-
-    // Remove other reactions by user
-    for (const r of lineupMessage.reactions.cache.values()) {
-      if (r.emoji.name !== emoji && r.users.cache.has(user.id)) {
-        await r.users.remove(user.id);
+    if (userClaims.has(user.id)) {
+      // Remove duplicate reaction
+      const userReactions = msg.reactions.cache.filter(r => r.users.cache.has(user.id));
+      for (const r of userReactions.values()) {
+        if (r.emoji.name !== reaction.emoji.name) await r.users.remove(user.id);
       }
+      return;
     }
 
-    // Assign position to user
-    positionMap[emoji] = user;
-    claimedUsers.set(user.id, emoji);
+    const pos = positionsMap[reaction.emoji.name];
+    if (claimed[pos]) return;
 
-    // Edit embed with updated info
-    lineupMessage.edit({ embeds: [buildEmbed()] });
-    message.channel.send(`✅ ${positions[emojis.indexOf(emoji)]} confirmed for <@${user.id}>`);
+    claimed[pos] = user;
+    userClaims.set(user.id, pos);
+    updateEmbed();
+    await msg.edit({ embeds: [embed] });
+    await message.channel.send(`✅ ${pos} confirmed for <@${user.id}>`);
 
-    // If all claimed, end collector
-    if (claimedUsers.size === 7) {
-      collector.stop('filled');
+    // If all filled
+    if (Object.keys(claimed).length === 7) {
+      collector.stop();
+      const finalLineup = Object.entries(positionsMap)
+        .map(([emoji, pos]) => `${pos}: <@${claimed[pos]?.id || 'Unfilled'}>`)
+        .join('\n');
+
+      await message.channel.send(`**Final Lineup:**\n${finalLineup}`);
+      await message.channel.send(`Finding friendly, looking for a rob.`);
     }
   });
 
-  collector.on('end', (_, reason) => {
-    if (reason === 'filled') {
-      const finalEmbed = new EmbedBuilder()
-        .setTitle('🚨 FRIENDLY LINEUP 🚨')
-        .setDescription(
-          positions
-            .map(
-              (pos, i) =>
-                `${emojis[i]} ${pos}: ${
-                  positionMap[emojis[i]] ? `<@${positionMap[emojis[i]].id}>` : 'Unclaimed'
-                }`
-            )
-            .join('\n')
-        )
-        .setColor('#00AE86');
-      message.channel.send({ content: 'Finding friendly, looking for a rob...', embeds: [finalEmbed] });
-    } else {
-      message.channel.send('⚠️ Friendly cancelled: not enough players.');
+  // PING AFTER 1 MINUTE IF NOT ENOUGH REACTIONS
+  setTimeout(async () => {
+    if (Object.keys(claimed).length < 7) {
+      await message.channel.send((guildName.toLowerCase().includes('parma') ? '@here' : '@everyone') + ' more reacts to get a friendly');
+    }
+  }, 60_000);
+
+  // CANCEL AFTER 10 MINUTES IF INCOMPLETE
+  collector.on('end', async () => {
+    if (Object.keys(claimed).length < 7) {
+      await message.channel.send('❌ Friendly cancelled. Not enough players.');
+    }
+  });
+
+  // DM players when host posts link
+  const linkCollector = message.channel.createMessageCollector({ filter: m => m.author.id === message.author.id, time: 3600000 });
+  linkCollector.on('collect', async m => {
+    if (m.content.includes('http')) {
+      for (const user of Object.values(claimed)) {
+        try {
+          await user.send('Here’s the friendly, join up: ' + m.content);
+        } catch (e) {
+          console.log(`❌ Couldn't DM ${user.tag}`);
+        }
+      }
+      linkCollector.stop();
     }
   });
 });
+
 
 // =============== Handle errors ===============
 process.on('unhandledRejection', console.error);
