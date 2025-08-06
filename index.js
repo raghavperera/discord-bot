@@ -74,6 +74,10 @@ client.on('voiceStateUpdate', async (oldState, newState) => {
 });
 
 // === FRIENDLY HOSTING ===
+await channel.send({
+  content: '@here',
+  embeds: [embed]
+});
 async function runHostFriendly(channel, hostMember) {
   const hasPermission =
     hostMember.permissions.has(PermissionsBitField.Flags.Administrator) ||
