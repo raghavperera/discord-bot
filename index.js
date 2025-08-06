@@ -2,7 +2,7 @@
 import { Client, GatewayIntentBits, Partials, EmbedBuilder } from 'discord.js';
 import { joinVoiceChannel, createAudioPlayer, createAudioResource, AudioPlayerStatus, VoiceConnectionStatus, entersState } from '@discordjs/voice';
 import play from 'play-dl';
-import 'dotenv/config'; // This loads the .env
+
 
 client.login(process.env.DISCORD_TOKEN);
 const client = new Client({
@@ -398,3 +398,4 @@ client.on('error', console.error);
 client.on('shardError', console.error);
 // Log in the bot with the token (replace 'YOUR_BOT_TOKEN' with actual token)
 client.login('YOUR_BOT_TOKEN');
+import 'dotenv/config'; // This loads the .env
