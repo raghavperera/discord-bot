@@ -3,7 +3,6 @@ import { Client, GatewayIntentBits, Partials, EmbedBuilder } from 'discord.js';
 import { joinVoiceChannel, createAudioPlayer, createAudioResource, AudioPlayerStatus, VoiceConnectionStatus, entersState } from '@discordjs/voice';
 import play from 'play-dl';
 
-
 client.login(process.env.DISCORD_TOKEN);
 const client = new Client({
   intents: [
