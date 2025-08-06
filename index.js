@@ -1,17 +1,17 @@
-
 import {
   Client,
   GatewayIntentBits,
   Partials,
   PermissionsBitField,
   EmbedBuilder,
-  Routes,
-  REST
+  Collection
 } from 'discord.js';
 import { joinVoiceChannel, entersState, VoiceConnectionStatus } from '@discordjs/voice';
 import express from 'express';
+import { config } from 'dotenv';
 import play from 'play-dl';
-import 'dotenv/config';
+
+config();
 
 const client = new Client({
   intents: [
@@ -26,228 +26,357 @@ const client = new Client({
 });
 
 const TOKEN = process.env.TOKEN;
-const CLIENT_ID = process.env.CLIENT_ID;
-const GUILD_ID = process.env.GUILD_ID;
+const PORT = process.env.PORT || 3000;
+const CHANNEL_ID = '1368359914145058956'; // Replace with your VC ID
+let connection;
 
-const failedDMs = new Map();
-const dmCache = new Set();
-const voiceChannelId = '1368359914145058956';
-let currentConnection;
-
-// Express server to keep bot alive
+// ===== EXPRESS SERVER TO STAY ONLINE =====
 const app = express();
-app.get('/', (_, res) => res.send('Bot is alive!'));
-app.listen(3000, () => console.log('Express server is running.'));
+app.get('/', (req, res) => res.send('Bot is alive!'));
+app.listen(PORT, () => console.log(`Uptime server running on port ${PORT}`));
 
-// Reconnect to voice channel on startup
-client.once('ready', async () => {
-  console.log(`Logged in as ${client.user.tag}`);
-  const guild = await client.guilds.fetch(GUILD_ID);
-  const channel = guild.channels.cache.get(voiceChannelId);
-  if (channel && channel.isVoiceBased()) {
-    connectToVC(channel);
+// ===== MUSIC PLAYER =====
+const queue = new Map();
+
+client.on('messageCreate', async message => {
+  if (!message.content.startsWith('!') || message.author.bot) return;
+  const args = message.content.slice(1).trim().split(/ +/);
+  const command = args.shift().toLowerCase();
+  const serverQueue = queue.get(message.guild.id);
+
+  if (command === 'play') {
+    const voiceChannel = message.member.voice.channel;
+    if (!voiceChannel) return message.reply('Join a VC first!');
+    const permissions = voiceChannel.permissionsFor(message.client.user);
+    if (!permissions.has(PermissionsBitField.Flags.Connect) || !permissions.has(PermissionsBitField.Flags.Speak)) {
+      return message.reply('Missing permissions to join or speak in VC.');
+    }
+
+    const songInfo = await play.search(args.join(''), { limit: 1 });
+    if (!songInfo[0]) return message.reply('No song found.');
+    const song = { title: songInfo[0].title, url: songInfo[0].url };
+
+    if (!serverQueue) {
+      const queueContruct = {
+        voiceChannel,
+        connection: null,
+        songs: [],
+        playing: true,
+        loop: false
+      };
+      queue.set(message.guild.id, queueContruct);
+      queueContruct.songs.push(song);
+
+      try {
+        const conn = joinVoiceChannel({
+          channelId: voiceChannel.id,
+          guildId: voiceChannel.guild.id,
+          adapterCreator: voiceChannel.guild.voiceAdapterCreator,
+          selfDeaf: false
+        });
+        queueContruct.connection = conn;
+        playSong(message.guild, queueContruct.songs[0]);
+      } catch (err) {
+        console.error(err);
+        queue.delete(message.guild.id);
+        return message.reply('Error joining VC.');
+      }
+    } else {
+      serverQueue.songs.push(song);
+      return message.reply(`Added to queue: ${song.title}`);
+    }
+  }
+
+  if (command === 'skip') {
+    if (!serverQueue) return message.reply('No song to skip.');
+    serverQueue.connection.destroy();
+    queue.delete(message.guild.id);
+    return message.reply('Skipped.');
+  }
+
+  if (command === 'stop') {
+    if (!serverQueue) return message.reply('Queue is empty.');
+    serverQueue.connection.destroy();
+    queue.delete(message.guild.id);
+    return message.reply('Stopped.');
+  }
+
+  if (command === 'loop') {
+    if (!serverQueue) return message.reply('No song playing.');
+    serverQueue.loop = !serverQueue.loop;
+    return message.reply(`Loop is now ${serverQueue.loop ? 'enabled' : 'disabled'}.`);
+  }
+
+  if (command === 'queue') {
+    if (!serverQueue) return message.reply('Queue is empty.');
+    return message.reply(serverQueue.songs.map((s, i) => `${i + 1}. ${s.title}`).join('\n'));
   }
 });
 
-function connectToVC(channel) {
-  currentConnection = joinVoiceChannel({
-    channelId: channel.id,
-    guildId: channel.guild.id,
-    adapterCreator: channel.guild.voiceAdapterCreator,
-    selfMute: true
-  });
+async function playSong(guild, song) {
+  const serverQueue = queue.get(guild.id);
+  if (!song) {
+    serverQueue.connection.destroy();
+    queue.delete(guild.id);
+    return;
+  }
 
-  currentConnection.on('stateChange', async (_, newState) => {
-    if (newState.status === VoiceConnectionStatus.Disconnected) {
-      try {
-        await entersState(currentConnection, VoiceConnectionStatus.Connecting, 5000);
-      } catch {
-        connectToVC(channel);
-      }
+  const stream = await play.stream(song.url);
+  const resource = (await import('@discordjs/voice')).createAudioResource(stream.stream, { inputType: stream.type });
+  const player = (await import('@discordjs/voice')).createAudioPlayer();
+
+  player.play(resource);
+  serverQueue.connection.subscribe(player);
+
+  player.on('idle', () => {
+    if (serverQueue.loop) {
+      playSong(guild, song);
+    } else {
+      serverQueue.songs.shift();
+      playSong(guild, serverQueue.songs[0]);
     }
   });
 }
 
-// ✅ auto-react to @everyone or @here
+// ===== JOIN VC AND STAY CONNECTED =====
+async function connectToVC() {
+  const guild = await client.guilds.fetch(process.env.GUILD_ID);
+  const channel = await guild.channels.fetch(CHANNEL_ID);
+  connection = joinVoiceChannel({
+    channelId: CHANNEL_ID,
+    guildId: guild.id,
+    adapterCreator: guild.voiceAdapterCreator,
+    selfDeaf: false,
+    selfMute: true
+  });
+  entersState(connection, VoiceConnectionStatus.Ready, 30_000);
+  console.log(`Connected to VC ${channel.name}`);
+}
+
+client.on('ready', async () => {
+  console.log(`Logged in as ${client.user.tag}`);
+  await connectToVC();
+  setInterval(async () => {
+    if (!connection || connection.state.status === VoiceConnectionStatus.Disconnected) {
+      await connectToVC();
+    }
+  }, 30_000);
+});
+
+// ===== REACT ✅ TO @everyone or @here =====
 client.on('messageCreate', async message => {
-  if ((message.content.includes('@everyone') || message.content.includes('@here')) && !message.author.bot) {
+  if (message.mentions.everyone) {
     try {
       await message.react('✅');
-    } catch {}
-  }
-});
-
-// !dmrole and /dmrole command
-client.on('messageCreate', async message => {
-  if (message.content.startsWith('!dmrole') && !message.author.bot) {
-    const args = message.content.split(' ').slice(1);
-    const roleMention = message.mentions.roles.first();
-    const content = args.slice(1).join(' ');
-    if (!roleMention) return message.reply('Please mention a role to DM.');
-
-    const members = roleMention.members.filter(m => !m.user.bot);
-    const failed = [];
-
-    await message.reply(`DMing ${members.size} users...`);
-    for (const member of members.values()) {
-      if (dmCache.has(member.id)) continue;
-      try {
-        await member.send(content);
-        dmCache.add(member.id);
-      } catch {
-        failed.push(`<@${member.id}>`);
-      }
-    }
-
-    if (failed.length > 0) {
-      await message.author.send(`❌ Failed to DM:
-.join('\n')
-')}`);
+    } catch (e) {
+      console.error('Failed to react:', e);
     }
   }
 });
+
+// ===== SLASH + PREFIX !dmrole COMMAND =====
+import { REST, Routes, SlashCommandBuilder } from 'discord.js';
+const dmRoleCache = new Set();
 
 client.on('interactionCreate', async interaction => {
   if (!interaction.isChatInputCommand()) return;
   if (interaction.commandName === 'dmrole') {
     const role = interaction.options.getRole('role');
-    const content = interaction.options.getString('message');
+    const msg = interaction.options.getString('message');
     const members = role.members.filter(m => !m.user.bot);
+
+    await interaction.reply(`Dming ${members.size} users in ${role.name}...`);
     const failed = [];
 
-    await interaction.reply({ content: 'DMing role...', ephemeral: true });
     for (const member of members.values()) {
-      if (dmCache.has(member.id)) continue;
+      if (dmRoleCache.has(member.id)) continue;
       try {
-        await member.send(content);
-        dmCache.add(member.id);
+        await member.send(msg);
+        dmRoleCache.add(member.id);
       } catch {
         failed.push(`<@${member.id}>`);
       }
     }
 
-    if (failed.length > 0) {
-      await interaction.user.send(`❌ Failed to DM:
-${failed.join('
-')}`);
-    }
+    const log = failed.length ? `Failed to DM:\n${failed.join('\n')}` : 'All DMs sent.';
+    await interaction.user.send(log).catch(() => {});
   }
 });
 
-// !hostfriendly for Parma FC
 client.on('messageCreate', async message => {
-  if (!message.content.startsWith('!hostfriendly') || message.author.bot) return;
-  const args = message.content.split(' ');
-  const hostPosition = args[1]?.toUpperCase();
-  const allowedRoles = ['Admin', 'Friendlies Department'];
-  const hasPermission = message.member.roles.cache.some(role => allowedRoles.includes(role.name));
-  if (!hasPermission) return message.reply('You are not allowed to host.');
+  if (!message.content.startsWith('!dmrole') || message.author.bot) return;
+  const [_, roleMention, ...msgParts] = message.content.split(' ');
+  const msg = msgParts.join(' ');
+  const roleId = roleMention.replace(/[<@&>]/g, '');
+  const role = message.guild.roles.cache.get(roleId);
+  if (!role) return message.reply('Role not found.');
 
-  const positions = ['GK', 'CB', 'CB2', 'CM', 'LW', 'RW', 'ST'];
-  const emojis = ['1️⃣', '2️⃣', '3️⃣', '4️⃣', '5️⃣', '6️⃣', '7️⃣'];
-  const claimed = {};
-  const emojiMap = {};
+  const members = role.members.filter(m => !m.user.bot);
+  message.reply(`Dming ${members.size} users...`);
+
+  const failed = [];
+  for (const member of members.values()) {
+    if (dmRoleCache.has(member.id)) continue;
+    try {
+      await member.send(msg);
+      dmRoleCache.add(member.id);
+    } catch {
+      failed.push(`<@${member.id}>`);
+    }
+  }
+
+  const log = failed.length ? `Failed to DM:\n${failed.join('\n')}` : 'All DMs sent.';
+  await message.author.send(log).catch(() => {});
+});
+
+// ===== REGISTER SLASH COMMAND =====
+const commands = [
+  new SlashCommandBuilder()
+    .setName('dmrole')
+    .setDescription('DM all users in a role')
+    .addRoleOption(opt => opt.setName('role').setDescription('Role').setRequired(true))
+    .addStringOption(opt => opt.setName('message').setDescription('Message to send').setRequired(true))
+].map(c => c.toJSON());
+
+const rest = new REST({ version: '10' }).setToken(TOKEN);
+rest.put(Routes.applicationCommands(process.env.CLIENT_ID), { body: commands }).catch(console.error);
+
+// ====== ADD YOUR HOSTFRIENDLY COMMAND HERE NEXT (next message to continue) ======
+import {
+  Client,
+  GatewayIntentBits,
+  Partials,
+  PermissionsBitField,
+  EmbedBuilder
+} from 'discord.js';
+import { joinVoiceChannel } from '@discordjs/voice';
+import express from 'express';
+import 'dotenv/config';
+
+const client = new Client({
+  intents: [
+    GatewayIntentBits.Guilds,
+    GatewayIntentBits.GuildMessages,
+    GatewayIntentBits.GuildMessageReactions,
+    GatewayIntentBits.GuildMembers,
+    GatewayIntentBits.MessageContent,
+    GatewayIntentBits.DirectMessages,
+    GatewayIntentBits.GuildVoiceStates
+  ],
+  partials: [Partials.Message, Partials.Channel, Partials.Reaction]
+});
+
+const app = express();
+app.get('/', (_, res) => res.send('Bot is running'));
+app.listen(3000, () => console.log('Express server is alive'));
+
+const POSITION_EMOJIS = ['1️⃣', '2️⃣', '3️⃣', '4️⃣', '5️⃣', '6️⃣', '7️⃣'];
+const POSITION_NAMES = ['GK', 'CB', 'CB2', 'CM', 'LW', 'RW', 'ST'];
+
+const POSITION_MAP = {};
+for (let i = 0; i < POSITION_EMOJIS.length; i++) {
+  POSITION_MAP[POSITION_EMOJIS[i]] = POSITION_NAMES[i];
+}
+
+const allowedRoles = ['Friendlies Department', 'Admin'];
+const claimedPositions = {};
+const reactedUsers = new Set();
+let collecting = false;
+
+client.on('messageCreate', async (message) => {
+  if (!message.content.toLowerCase().startsWith('!hostfriendly') || !message.guild) return;
+
+  const member = await message.guild.members.fetch(message.author.id);
+  if (!member.roles.cache.some(role => allowedRoles.includes(role.name))) return message.reply('You don’t have permission to host.');
+
+  if (collecting) return message.reply('A friendly is already being hosted. Please wait.');
+
+  collecting = true;
+  const args = message.content.trim().split(/ +/);
+  const hostPosition = args[1]?.toUpperCase();
 
   const embed = new EmbedBuilder()
     .setTitle('**PARMA FC 7v7 FRIENDLY**')
-    .setDescription(emojis.map((e, i) => `React ${e} → ${positions[i]}`).join('
-') + '
-@here')
-    .setColor(0x00AE86);
+    .setDescription(
+      POSITION_NAMES.map((pos, idx) => `React ${POSITION_EMOJIS[idx]} → ${pos}: ${claimedPositions[pos] ? `<@${claimedPositions[pos]}>` : '---'}`).join('\n') + `\n\n@here`
+    )
+    .setColor('#0099ff');
 
-  const msg = await message.channel.send({ content: '@here', embeds: [embed] });
-  emojis.forEach(e => msg.react(e));
-
-  if (hostPosition && positions.includes(hostPosition)) {
-    const index = positions.indexOf(hostPosition);
-    claimed[positions[index]] = message.author.id;
-    await msg.channel.send(`✅ ${hostPosition} confirmed for <@${message.author.id}>`);
+  const friendlyMessage = await message.channel.send({ content: '@here', embeds: [embed] });
+  for (const emoji of POSITION_EMOJIS) {
+    await friendlyMessage.react(emoji);
   }
 
-  const filter = (reaction, user) => emojis.includes(reaction.emoji.name) && !user.bot;
-  const collector = msg.createReactionCollector({ filter, time: 10 * 60 * 1000 });
+  if (hostPosition && POSITION_NAMES.includes(hostPosition)) {
+    claimedPositions[hostPosition] = message.author.id;
+    reactedUsers.add(message.author.id);
+    await message.channel.send(`✅ ${hostPosition} confirmed for <@${message.author.id}>`);
+    await updateEmbed(friendlyMessage);
+  }
+
+  const collector = friendlyMessage.createReactionCollector({ time: 10 * 60 * 1000 });
 
   collector.on('collect', async (reaction, user) => {
-    const position = positions[emojis.indexOf(reaction.emoji.name)];
-    if (Object.values(claimed).includes(user.id)) return reaction.users.remove(user);
+    if (user.bot) return;
+    if (!POSITION_MAP[reaction.emoji.name]) return;
+    if (reactedUsers.has(user.id)) {
+      await reaction.users.remove(user.id);
+      return;
+    }
 
-    if (!claimed[position]) {
-      await new Promise(res => setTimeout(res, 3000));
-      if (!Object.values(claimed).includes(user.id)) {
-        claimed[position] = user.id;
-        await msg.channel.send(`✅ ${position} confirmed for <@${user.id}>`);
+    const position = POSITION_MAP[reaction.emoji.name];
+
+    if (claimedPositions[position]) return;
+
+    setTimeout(async () => {
+      if (!reactedUsers.has(user.id)) {
+        claimedPositions[position] = user.id;
+        reactedUsers.add(user.id);
+        await message.channel.send(`✅ ${position} confirmed for <@${user.id}>`);
+        await updateEmbed(friendlyMessage);
+      }
+    }, 3000);
+  });
+
+  let reminderSent = false;
+  const interval = setInterval(async () => {
+    const count = Object.keys(claimedPositions).length;
+    if (count >= 7) {
+      collector.stop();
+      clearInterval(interval);
+      const finalLineup = POSITION_NAMES.map(pos => `${pos}: ${claimedPositions[pos] ? `<@${claimedPositions[pos]}>` : '---'}`).join('\n');
+      await message.channel.send(`**Final Lineup:**\n${finalLineup}\nFinding friendly, looking for a rob.`);
+    } else if (!reminderSent && Date.now() - friendlyMessage.createdTimestamp >= 60 * 1000) {
+      reminderSent = true;
+      await message.channel.send('@here More reacts to get a friendly!');
+    } else if (Date.now() - friendlyMessage.createdTimestamp >= 10 * 60 * 1000) {
+      collector.stop();
+      clearInterval(interval);
+      await message.channel.send('❌ Friendly cancelled. Not enough players.');
+      collecting = false;
+    }
+  }, 5000);
+
+  client.on('messageCreate', async (linkMsg) => {
+    if (linkMsg.channel.id === message.channel.id && linkMsg.content.includes('http')) {
+      const claimedUsers = Object.values(claimedPositions);
+      for (const userId of claimedUsers) {
+        try {
+          const user = await client.users.fetch(userId);
+          await user.send("Here’s the friendly, join up.\n" + linkMsg.content);
+        } catch {
+          console.log(`Could not DM ${userId}`);
+        }
       }
     }
-    const desc = emojis.map((e, i) => `React ${e} → ${positions[i]} ${claimed[positions[i]] ? `- <@${claimed[positions[i]]}>` : ''}`).join('
-') + '
-@here';
-    embed.setDescription(desc);
-    msg.edit({ embeds: [embed] });
   });
 
-  setTimeout(() => {
-    const totalClaims = Object.keys(claimed).length;
-    if (totalClaims < 7) {
-      msg.channel.send('@here more reacts to get a friendly');
-    }
-  }, 60 * 1000);
-
-  collector.on('end', async () => {
-    const totalClaims = Object.keys(claimed).length;
-    if (totalClaims < 7) {
-      msg.channel.send('❌ Friendly cancelled.');
-    } else {
-      const finalLineup = positions.map(pos => `${pos}: <@${claimed[pos]}>`).join('
-');
-      msg.channel.send(`**FINAL LINEUP**
-${finalLineup}
-Finding friendly, looking for a rob`);
-
-      const linkCollector = msg.channel.createMessageCollector({ filter: m => m.author.id === message.author.id, time: 600000 });
-      linkCollector.on('collect', async linkMsg => {
-        if (linkMsg.content.includes('roblox.com')) {
-          for (const userId of Object.values(claimed)) {
-            try {
-              const user = await client.users.fetch(userId);
-              await user.send("Here’s the friendly, join up:
-" + linkMsg.content);
-            } catch {}
-          }
-          linkCollector.stop();
-        }
-      });
-    }
-  });
+  async function updateEmbed(msg) {
+    embed.setDescription(
+      POSITION_NAMES.map((pos, idx) => `React ${POSITION_EMOJIS[idx]} → ${pos}: ${claimedPositions[pos] ? `<@${claimedPositions[pos]}>` : '---'}`).join('\n') + `\n\n@here`
+    );
+    await msg.edit({ embeds: [embed] });
+  }
 });
 
-// Register slash commands (for /dmrole)
-const rest = new REST({ version: '10' }).setToken(TOKEN);
-(async () => {
-  try {
-    await rest.put(Routes.applicationGuildCommands(CLIENT_ID, GUILD_ID), {
-      body: [{
-        name: 'dmrole',
-        description: 'DM all members in a role',
-        options: [
-          {
-            name: 'role',
-            description: 'Role to DM',
-            type: 8,
-            required: true
-          },
-          {
-            name: 'message',
-            description: 'Message to send',
-            type: 3,
-            required: true
-          }
-        ]
-      }]
-    });
-    console.log('Slash command registered.');
-  } catch (err) {
-    console.error(err);
-  }
-})();
-
-client.login(TOKEN);
+client.login(process.env.TOKEN);
