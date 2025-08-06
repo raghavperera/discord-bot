@@ -101,7 +101,7 @@ client.on('messageCreate', async message => {
 
     if (failed.length > 0) {
       await message.author.send(`❌ Failed to DM:
-${failed.join('
+.join('\n')
 ')}`);
     }
   }
