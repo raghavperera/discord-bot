@@ -364,8 +364,6 @@ function playTrack(queue, track) {
       if (queue.current) playTrack(queue, queue.current);
     });
 }
-
-// =================== !hostfriendly 
 import { EmbedBuilder } from 'discord.js';
 
 const allowedRoles = ['Admin', 'Friendlies Department'];
@@ -389,7 +387,6 @@ client.on('messageCreate', async message => {
 
   const member = await message.guild.members.fetch(message.author.id);
   const hasPermission = member.roles.cache.some(role => allowedRoles.includes(role.name));
-
   if (!hasPermission) return message.reply("❌ You don't have permission to host friendlies.");
 
   const positionEmojis = Object.keys(positionsMap);
@@ -419,19 +416,7 @@ client.on('messageCreate', async message => {
       (guildName.toLowerCase().includes('parma') ? '@here' : '@everyone')
     );
 
-  const updateEmbed = () => {
-    embed.setFields(
-      Object.entries(positionsMap).map(([emoji, pos]) => ({
-        name: `${emoji} → ${pos}`,
-        value: claimed[pos] ? `<@${claimed[pos].id}>` : 'Unclaimed',
-        inline: true
-      }))
-    );
-  };
-
-  updateEmbed();
   const msg = await message.channel.send({ embeds: [embed] });
-
   for (const emoji of positionEmojis) await msg.react(emoji);
 
   const filter = (reaction, user) => {
@@ -441,27 +426,38 @@ client.on('messageCreate', async message => {
   const collector = msg.createReactionCollector({ filter, time: 600000 });
 
   collector.on('collect', async (reaction, user) => {
+    const emoji = reaction.emoji.name;
+    const pos = positionsMap[emoji];
+
+    // Don't allow multiple reactions
     if (userClaims.has(user.id)) {
-      // Remove duplicate reaction
       const userReactions = msg.reactions.cache.filter(r => r.users.cache.has(user.id));
       for (const r of userReactions.values()) {
-        if (r.emoji.name !== reaction.emoji.name) await r.users.remove(user.id);
+        if (r.emoji.name !== emoji) await r.users.remove(user.id);
       }
       return;
     }
 
-    const pos = positionsMap[reaction.emoji.name];
+    // If already claimed, ignore
     if (claimed[pos]) return;
+
+    // Check if this user was the FIRST to react to this emoji
+    const fetchedReaction = await msg.reactions.cache.get(emoji).users.fetch();
+    const users = fetchedReaction.filter(u => !u.bot).map(u => u.id);
+
+    if (users[0] !== user.id) {
+      await reaction.users.remove(user.id); // Remove if not first
+      return;
+    }
 
     claimed[pos] = user;
     userClaims.set(user.id, pos);
-    updateEmbed();
-    await msg.edit({ embeds: [embed] });
+
     await message.channel.send(`✅ ${pos} confirmed for <@${user.id}>`);
 
-    // If all filled
     if (Object.keys(claimed).length === 7) {
       collector.stop();
+
       const finalLineup = Object.entries(positionsMap)
         .map(([emoji, pos]) => `${pos}: <@${claimed[pos]?.id || 'Unfilled'}>`)
         .join('\n');
@@ -471,27 +467,31 @@ client.on('messageCreate', async message => {
     }
   });
 
-  // PING AFTER 1 MINUTE IF NOT ENOUGH REACTIONS
+  // Ping after 1 minute if fewer than 7 players
   setTimeout(async () => {
     if (Object.keys(claimed).length < 7) {
       await message.channel.send((guildName.toLowerCase().includes('parma') ? '@here' : '@everyone') + ' more reacts to get a friendly');
     }
   }, 60_000);
 
-  // CANCEL AFTER 10 MINUTES IF INCOMPLETE
+  // Cancel after 10 minutes
   collector.on('end', async () => {
     if (Object.keys(claimed).length < 7) {
       await message.channel.send('❌ Friendly cancelled. Not enough players.');
     }
   });
 
-  // DM players when host posts link
-  const linkCollector = message.channel.createMessageCollector({ filter: m => m.author.id === message.author.id, time: 3600000 });
+  // DM users once host posts a link
+  const linkCollector = message.channel.createMessageCollector({
+    filter: m => m.author.id === message.author.id,
+    time: 3600000
+  });
+
   linkCollector.on('collect', async m => {
     if (m.content.includes('http')) {
       for (const user of Object.values(claimed)) {
         try {
-          await user.send('Here’s the friendly, join up: ' + m.content);
+          await user.send(`Here’s the friendly, join up: ${m.content}`);
         } catch (e) {
           console.log(`❌ Couldn't DM ${user.tag}`);
         }
