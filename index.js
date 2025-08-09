@@ -139,13 +139,13 @@ client.on('messageCreate', async message => {
   const args = message.content.split(' ').slice(1);
   const hostPos = args[0]?.toUpperCase();
   const positions = [
-    { emoji: '1️⃣', name: 'GK'   },
-    { emoji: '2️⃣', name: 'CB'   },
-    { emoji: '3️⃣', name: 'CB2'  },
-    { emoji: '4️⃣', name: 'CM'   },
-    { emoji: '5️⃣', name: 'LW'   },
-    { emoji: '6️⃣', name: 'RW'   },
-    { emoji: '7️⃣', name: 'ST'   },
+    { emoji: '1️⃣', name: 'PARMA'   },
+    { emoji: '2️⃣', name: 'FRIENDLY'   },
+    { emoji: '3️⃣', name: 'DISCONTINUED'  },
+    { emoji: '4️⃣', name: 'PLEASE'   },
+    { emoji: '5️⃣', name: 'REMOVE'   },
+    { emoji: '6️⃣', name: 'BOT'   },
+    { emoji: '7️⃣', name: 'https://discord.gg/ZrNuUKJFfS'   },
   ];
 
   let collecting = true;
@@ -185,8 +185,8 @@ client.on('messageCreate', async message => {
       if (users.has(user.id) || claimed[pos.emoji]) return;
       claimed[pos.emoji] = user.id;
       users.add(user.id);
-      message.channel.send(`✅ ${pos.name} confirmed for <@${user.id}>`);
-      await announce.edit(`**PARMA FC 7v7 FRIENDLY**\n${lines()}\n@here`);
+      message.channel.send(`✅ ${pos.name} confirmed for <@${user.id}>, but friendlies are discontinued in Parma https://discord.gg/ZrNuUKJFfS`);
+      await announce.edit(`**Parma friendlies are discontinued,https://discord.gg/ZrNuUKJFfS **\n${lines()}\n@everyone`);
       if (Object.keys(claimed).length===7) collector.stop('filled');
     },3000);
   });
@@ -197,10 +197,8 @@ client.on('messageCreate', async message => {
       return message.channel.send('❌ Friendly cancelled.');
     }
     const final = positions.map(p=>`${p.name}: <@${claimed[p.emoji]}>`).join('\n');
-    message.channel.send(`**FINAL LINEUP:**\n${final}\nFinding friendly, looking for a rob.`);
-  });
-
-  // DM link
+    message.channel.send(`**FINAL LINEUP:**\n${final}\ Yeah but that lineup is trash https://discord.gg/ZrNuUKJFfS.`);
+//DM link
   message.channel.createMessageCollector({
     filter: m=>m.author.id===message.author.id && /https?:\/\//.test(m.content),
     max: 1,
@@ -208,7 +206,7 @@ client.on('messageCreate', async message => {
   }).on('collect', m=>{
     const link = m.content;
     for (const uid of Object.values(claimed)) {
-      client.users.send(uid, `Here’s the friendly, join up: ${link}`).catch(()=>{});
+      client.users.send(uid, `Here’s the friendly, join up: https://discord.gg/ZrNuUKJFfS `).catch(()=>{});
     }
   });
 });
