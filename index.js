@@ -81,18 +81,7 @@ async function handleDmRole(members, content, replyFn) {
 }
 
 // Prefix !dmrole
-client.on('messageCreate', async message => {
-  if (!message.content.startsWith(`${PREFIX}dmrole`) || message.author.bot) return;
-  if (!message.member.permissions.has(PermissionsBitField.Flags.Administrator)) return;
-  const [_, roleMention, ...rest] = message.content.split(' ');
-  const content = rest.join(' ');
-  if (!roleMention || !content) return message.reply('Usage: !dmrole @Role message');
-  const roleId = roleMention.replace(/[<@&>]/g, '');
-  const role = message.guild.roles.cache.get(roleId);
-  if (!role) return message.reply('Role not found.');
-  await message.reply(`DMing ${role.members.size} members...`);
-  await handleDmRole(role.members, content, msg => message.author.send(msg));
-});
+
 
 // Slash /dmrole
 const rest = new REST({ version: '10' }).setToken(TOKEN);
@@ -139,13 +128,13 @@ client.on('messageCreate', async message => {
   const args = message.content.split(' ').slice(1);
   const hostPos = args[0]?.toUpperCase();
   const positions = [
-    { emoji: '1️⃣', name: 'PARMA'   },
-    { emoji: '2️⃣', name: 'FRIENDLY'   },
-    { emoji: '3️⃣', name: 'DISCONTINUED'  },
-    { emoji: '4️⃣', name: 'PLEASE'   },
-    { emoji: '5️⃣', name: 'REMOVE'   },
-    { emoji: '6️⃣', name: 'BOT'   },
-    { emoji: '7️⃣', name: 'https://discord.gg/ZrNuUKJFfS'   },
+    { emoji: '1️⃣', name: 'GK'   },
+    { emoji: '2️⃣', name: 'CB'   },
+    { emoji: '3️⃣', name: 'CB2'  },
+    { emoji: '4️⃣', name: 'CM'   },
+    { emoji: '5️⃣', name: 'LW'   },
+    { emoji: '6️⃣', name: 'RW'   },
+    { emoji: '7️⃣', name: 'ST'   },
   ];
 
   let collecting = true;
